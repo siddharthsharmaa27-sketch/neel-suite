@@ -429,7 +429,6 @@ const KEYS = {
   dprClosed: 'ctpm:dpr_closed',
   tooling: 'ctpm:tooling_dies',
   machineEnergy: 'ctpm:machine_energy_logs',
-  crmDeals: 'ctpm:crm_deals',
 };
 
 /* =========================================================================
@@ -1055,6 +1054,15 @@ function orderTitle(o) { return o ? `${o.spec || '—'}${o.productType ? ' ' + o
 const COPPER_KG_PER_M_PER_MM2 = 0.00894;
 function weightPerMetre(odMm, thkMm) { return Math.PI * (Number(odMm) - Number(thkMm)) * Number(thkMm) * COPPER_KG_PER_M_PER_MM2; }
 // "97 g/m", "0.097 kg/m", "Cu-DHP, weight 97 gm/mtr", "97 grams per meter"  ->  kg per metre
+// grams per metre of a copper tube (same density as weightPerMetre, which is kg/m); 0 until both sizes are valid
+function calcGramPerMeter(od, thk) {
+  if (!(Number(od) > 0) || !(Number(thk) > 0) || Number(thk) >= Number(od)) return 0;
+  return weightPerMetre(od, thk) * 1000;
+}
+// metres of tube in a given weight (kg) at a given g/m; '' / 0 -> 0
+function metersFromKg(kg, gm) { return gm > 0 && Number(kg) > 0 ? Number(kg) * 1000 / gm : 0; }
+function fmtMeters(m) { return Number(m).toLocaleString(undefined, { maximumFractionDigits: 1 }); }
+
 function parseWeightPerM(text) {
   const m = String(text ?? '').match(/(?:^|[\s:=,(])(\d+(?:[.,]\d+)?)\s*(kgs?|kilograms?|grams?|gms?|g)\s*(?:\/|per)\s*(?:m|mtrs?|meters?|metres?)\b/i);
   if (!m) return { ok: false };
@@ -1521,6 +1529,9 @@ function exportToExcel(filename, sheets) {
     const wb = XLSX.utils.book_new();
     Object.entries(sheets).forEach(([name, rows]) => {
       const ws = XLSX.utils.json_to_sheet(rows && rows.length ? rows : [{}]);
+      // readable column widths (longest cell in each column, capped)
+      const cols = Object.keys((rows && rows[0]) || {});
+      if (cols.length) ws['!cols'] = cols.map(k => ({ wch: Math.min(45, Math.max(String(k).length, ...rows.slice(0, 200).map(r => String(r[k] ?? '').length)) + 2) }));
       XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
     });
     XLSX.writeFile(wb, filename);
@@ -2056,14 +2067,6 @@ function TraceabilityTree({ batch, batches, heats }) {
   );
 }
 
-function MTCGenerator({ batch, customer, qmLots }) {
-  const handlePrintMTC = () => {
-    window.print(); // Triggers browser print dialog
-  };
-  return (
-    <Button icon={Printer} onClick={handlePrintMTC}>Generate MTC PDF</Button>
-  );
-}
 
 function OEEDashboard({ downtimeLogs, planRows, shiftHours = 8 }) {
   const plannedMinutes = shiftHours * 60;
@@ -2091,20 +2094,6 @@ function OEEDashboard({ downtimeLogs, planRows, shiftHours = 8 }) {
   );
 }
 
-function EnergyTracker({ onLogEnergy }) {
-  const [kwh, setKwh] = useState('');
-  return (
-    <Card>
-      <SectionTitle sub="Log kWh per shift for Cost of Production.">Live Utility Tracking</SectionTitle>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <div style={{ flex: '1 1 140px' }}>
-          <TextField label="Meter Reading (kWh)" type="number" value={kwh} onChange={e => setKwh(e.target.value)} />
-        </div>
-        <Button disabled={!kwh} onClick={() => { onLogEnergy(kwh); setKwh(''); }}>Log Consumption</Button>
-      </div>
-    </Card>
-  );
-}
 
 function ToolingManagement({ toolingData, onLogUsage }) {
   return (
@@ -2682,8 +2671,8 @@ function controlPlanStatus(lines, meta, batches) {
    ========================================================================= */
 
 const DEFAULT_DIES = [
-  { id: 'DIE-01', size: '15mm', usageMeters: 4800, limitMeters: 5000, status: 'Active' },
-  { id: 'DIE-02', size: '6.35mm', usageMeters: 1200, limitMeters: 8000, status: 'Active' },
+  { id: 'DIE-01', type: 'Die', size: '15mm', usageMeters: 4800, limitMeters: 5000, status: 'Active' },
+  { id: 'DIE-02', type: 'Die', size: '6.35mm', usageMeters: 1200, limitMeters: 8000, status: 'Active' },
 ];
 
 const ENERGY_MACHINES = [
@@ -2702,45 +2691,48 @@ const ENERGY_MACHINES = [
 
 const thStyle = { padding: '10px 14px', color: C.subtext, textTransform: 'uppercase', fontSize: 11.5 };
 
-function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishing, user }) {
+function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishing, onDeleteDie, user }) {
   const [showAdd, setShowAdd] = useState(false);
   const [dieId, setDieId] = useState('');
+  const [toolType, setToolType] = useState('Die');
   const [size, setSize] = useState('');
   const [limit, setLimit] = useState('');
   const [addMeters, setAddMeters] = useState({});
 
   const handleAdd = () => {
     if (!dieId || !size || !limit) return;
-    onAddDie({ id: dieId.trim(), size: size.trim(), usageMeters: 0, limitMeters: Number(limit), status: 'Active' });
+    onAddDie({ id: dieId.trim(), type: toolType, size: size.trim(), usageMeters: 0, limitMeters: Number(limit), status: 'Active' });
     setDieId(''); setSize(''); setLimit(''); setShowAdd(false);
   };
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16 }}>
-        <SectionTitle sub="Managed by Tool Room — track die life, wear limits, and polishing schedules.">Tooling & Die Management</SectionTitle>
-        <Button icon={Plus} onClick={() => setShowAdd(v => !v)}>{showAdd ? 'Close' : 'Add New Die'}</Button>
+        <SectionTitle sub="Managed by Tool Room — track die/plug life, wear limits, and polishing schedules.">Tooling & Die Management</SectionTitle>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><ReportButton id="tooling" /><Button icon={Plus} onClick={() => setShowAdd(v => !v)}>{showAdd ? 'Close' : 'Add New Tool'}</Button></div>
       </div>
 
       {showAdd && (
         <Card style={{ marginBottom: 16, background: C.panelAlt }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-            <TextField label="Die ID / Code" value={dieId} onChange={e => setDieId(e.target.value)} placeholder="e.g. DIE-03" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+            <SelectField label="Tool Type" options={['Die', 'Plug']} value={toolType} onChange={e => setToolType(e.target.value)} />
+            <TextField label="ID / Code" value={dieId} onChange={e => setDieId(e.target.value)} placeholder="e.g. DIE-03" />
             <TextField label="Tube Size" value={size} onChange={e => setSize(e.target.value)} placeholder="e.g. 15mm" />
             <TextField label="Wear Limit (meters)" type="number" value={limit} onChange={e => setLimit(e.target.value)} placeholder="5000" />
           </div>
           <div style={{ marginTop: 12 }}>
-            <Button onClick={handleAdd}>Save Die to Register</Button>
+            <Button onClick={handleAdd}>Save Tool to Register</Button>
           </div>
         </Card>
       )}
 
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 600 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 650 }}>
             <thead>
               <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                <th style={thStyle}>Die ID</th>
+                <th style={thStyle}>Type</th>
+                <th style={thStyle}>Tool ID</th>
                 <th style={thStyle}>Size</th>
                 <th style={thStyle}>Meters Drawn</th>
                 <th style={thStyle}>Wear Limit</th>
@@ -2753,6 +2745,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                 const nearLimit = die.usageMeters >= die.limitMeters * 0.9;
                 return (
                   <tr key={die.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <td style={{ padding: '10px 14px', color: C.subtext }}>{die.type || 'Die'}</td>
                     <td style={{ padding: '10px 14px', fontWeight: 600 }}>{die.id}</td>
                     <td style={{ padding: '10px 14px', color: C.subtext }}>{die.size}</td>
                     <td className="font-mono" style={{ padding: '10px 14px' }}>{die.usageMeters.toLocaleString()}m</td>
@@ -2774,7 +2767,11 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                         const m = Number(addMeters[die.id]);
                         if (m > 0) { onUpdateDieUsage(die.id, m); setAddMeters({ ...addMeters, [die.id]: '' }); }
                       }}>Add</Button>
-                      <Button variant="danger" onClick={() => onSendForPolishing(die.id)}>Polish / Reset</Button>
+                      <Button variant="secondary" onClick={() => onSendForPolishing(die.id)}>Polish</Button>
+                      <Button variant="danger" icon={Trash2} onClick={() => {
+                        if (die.usageMeters > 0 && user?.role !== 'Admin') { window.alert(`${die.id} has ${die.usageMeters.toLocaleString()} m of usage history. Only the Admin can delete a tool with history.`); return; }
+                        if (window.confirm(die.usageMeters > 0 ? `${die.id} has ${die.usageMeters.toLocaleString()} m of usage history. Delete it anyway?` : `Delete ${die.id}?`)) onDeleteDie(die.id);
+                      }} />
                     </td>
                   </tr>
                 );
@@ -2802,7 +2799,7 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <SectionTitle sub="Log daily or shift closing kWh meter readings for every individual machine.">Machine-Wise Utility Tracking</SectionTitle>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}><SectionTitle sub="Log daily or shift closing kWh meter readings for every individual machine.">Machine-Wise Utility Tracking</SectionTitle><ReportButton id="energy" /></div>
         <label style={{ fontSize: 13, color: C.subtext, display: 'flex', gap: 8, alignItems: 'center' }}>
           Reading Date:
           <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }} />
@@ -2867,11 +2864,26 @@ function SalesQuotationEngine({ settings, user }) {
   const finalPricePerMT = (Number(lmeRate) || 0) + (Number(conversionCost) || 0);
   const totalOrderValue = finalPricePerMT * (Number(qty) || 0);
 
+  const handlePrint = () => {
+    const el = document.getElementById('sales-quote-print-area');
+    if (!el) return;
+    const win = window.open('', '', 'width=900,height=700');
+    if (!win) return;   // pop-up blocked
+    win.document.write('<html><head><title>Sales Quotation</title>');
+    win.document.write('<style>body{font-family:"Inter",sans-serif;padding:40px;color:#32363a} @media print{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style>');
+    win.document.write('</head><body>');
+    win.document.write(el.innerHTML);
+    win.document.write('</body></html>');
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); win.close(); }, 250);
+  };
+
   return (
     <Card style={{ borderTop: `4px solid ${C.blue}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
         <SectionTitle sub="Quote = LME copper rate + conversion cost. Rates default to the values saved in Master.">Intelligent Sales & Quotation</SectionTitle>
-        <Button icon={Printer} onClick={() => window.print()}>Export PDF</Button>
+        <Button icon={Printer} onClick={handlePrint}>Export PDF</Button>
       </div>
 
       {lmeMissing && (
@@ -2888,7 +2900,7 @@ function SalesQuotationEngine({ settings, user }) {
         <TextField label="Conversion Cost ($/MT)" type="number" value={conversionCost} onChange={e => setConvEdit(e.target.value)} />
       </div>
 
-      <div style={{ background: '#fff', border: `1px solid ${C.border}`, padding: 30, borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+      <div id="sales-quote-print-area" style={{ background: '#fff', border: `1px solid ${C.border}`, padding: 30, borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: `2px solid ${C.copper}`, paddingBottom: 16, marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
           <div>
             <h2 style={{ margin: 0, color: C.ink, fontSize: 24, fontWeight: 800 }}>COMMERCIAL PROPOSAL</h2>
@@ -2987,6 +2999,22 @@ function DigitalProductPassport({ batches, heats, energyLogs }) {
   const [pickedId, setPickedId] = useState('');
   const batch = list.find(b => b.id === pickedId) || list[0];
 
+  const handlePrint = () => {
+    const el = document.getElementById('passport-print-area');
+    if (!el) return;
+    const win = window.open('', '', 'width=900,height=700');
+    if (!win) return;   // pop-up blocked
+    win.document.write('<html><head><title>Digital Product Passport</title>');
+    win.document.write('<style>body{font-family:"Inter",sans-serif;padding:30px;color:#32363a} @media print{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style>');
+    win.document.write('</head><body>');
+    win.document.write('<h2 style="color:#0854a0;border-bottom:2px solid #0854a0;padding-bottom:10px;margin-top:0;">Digital Product Passport</h2>');
+    win.document.write(el.innerHTML);
+    win.document.write('</body></html>');
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); win.close(); }, 250);
+  };
+
   if (!batch) {
     return (
       <Card style={{ borderLeft: `4px solid ${C.green}` }}>
@@ -3021,11 +3049,11 @@ function DigitalProductPassport({ batches, heats, energyLogs }) {
             {list.slice(0, 60).map(b => <option key={b.id} value={b.id}>{b.productionOrderNo || b.batchCode} · {b.spec || ''}</option>)}
           </select>
           <Badge tone={released ? 'green' : 'amber'} icon={ShieldCheck}>{released ? 'Released for dispatch' : (FLOW_STATE_INFO[state]?.label || batch.status || 'In production')}</Badge>
-          <Button variant="secondary" icon={Printer} onClick={() => window.print()}>Print</Button>
+          <Button variant="secondary" icon={Printer} onClick={handlePrint}>Print</Button>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 16 }}>
+      <div id="passport-print-area" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 16 }}>
         <div style={{ padding: 16, background: C.panelAlt, borderRadius: 8 }}>
           <h4 style={{ margin: '0 0 12px 0', fontSize: 13, color: C.ink, display: 'flex', alignItems: 'center', gap: 6 }}><Link2 size={16} /> Genealogy</h4>
           <ul style={{ paddingLeft: 20, margin: 0, fontSize: 13, color: C.subtext, lineHeight: '1.8' }}>
@@ -3148,245 +3176,6 @@ function DynamicScheduler({ spinnerPlans, maintenanceLogs, capacities, onOpenPla
   );
 }
 
-function PredictiveIntelligence() {
-  const insights = [
-    { type: 'Quality', text: 'Dimensional variance detected on DIE-02. 78% probability of wall thickness rejection if run speed exceeds 400m/min.', action: 'Limit Machine Speed' },
-    { type: 'Supply Chain', text: 'LME Copper rising rapidly. Based on current production run rate, LME Grade A cathode inventory will deplete before the next locked-price delivery.', action: 'Review Procurement' }
-  ];
-
-  return (
-    <Card style={{ borderLeft: `4px solid ${C.copper}` }}>
-      <SectionTitle sub="Machine learning insights across quality, risk, and supply.">Predictive Intelligence</SectionTitle>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 }}>
-        {insights.map((insight, idx) => (
-          <div key={idx} style={{ padding: 14, background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 800, color: C.copperDark, textTransform: 'uppercase', marginBottom: 8 }}>
-              {insight.type === 'Quality' ? <Target size={14} /> : <TrendingUp size={14} />}
-              {insight.type} Risk Detected
-            </div>
-            <p style={{ margin: '0 0 12px 0', fontSize: 13, color: C.ink, lineHeight: '1.6' }}>{insight.text}</p>
-            <Button variant="secondary" style={{ fontSize: 12, padding: '4px 12px' }}>{insight.action}</Button>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/* =========================================================================
-   COMMERCIAL STRATEGY & MOBILE EXECUTIVE WIDGETS
-   ========================================================================= */
-
-const CRM_STAGES = ['Lead', 'Proposal Sent', 'Negotiation', 'Won', 'Lost'];
-
-function B2BCRMPipeline({ deals, orders, settings, user, onAddDeal, onUpdateDeal, onDeleteDeal }) {
-  const [showAdd, setShowAdd] = useState(false);
-  const [f, setF] = useState({ client: '', tonnage: '', stage: 'Lead', expectedClose: '' });
-  const md = useContext(MasterDataCtx) || {};
-  const canEdit = canEditOrders(user?.role);
-  const list = Array.isArray(deals) ? deals : [];
-  const active = list.filter(d => d.stage !== 'Won' && d.stage !== 'Lost');
-
-  // capacity check: open order backlog plus this deal, against the monthly output target set in Master
-  const targetMT = Number(settingValue(settings, 'monthlyTargetMT')) || 0;
-  const openMT = (orders || []).filter(o => !isOrderClosed(o)).reduce((s, o) => s + (toMT(orderPendingQty(o), o.unit) || 0), 0);
-  const capacityOf = (d) => {
-    if (d.stage === 'Won' || d.stage === 'Lost') return null;
-    if (!(targetMT > 0)) return { ok: null, text: 'Set the monthly target in Master' };
-    const total = openMT + Number(d.tonnage || 0);
-    return total > targetMT
-      ? { ok: false, text: `Warning - backlog ${fmtNum(openMT, 0)} + ${d.tonnage} MT is over the ${fmtNum(targetMT, 0)} MT monthly target` }
-      : { ok: true, text: `Clear - backlog ${fmtNum(openMT, 0)} + ${d.tonnage} MT within ${fmtNum(targetMT, 0)} MT target` };
-  };
-  const submit = () => {
-    if (!f.client.trim() || !(Number(f.tonnage) > 0)) return;
-    onAddDeal({ client: f.client.trim(), tonnage: Number(f.tonnage), stage: f.stage, expectedClose: f.expectedClose });
-    setF({ client: '', tonnage: '', stage: 'Lead', expectedClose: '' }); setShowAdd(false);
-  };
-  const selStyle = { padding: '4px 6px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12 };
-
-  return (
-    <Card style={{ borderTop: `4px solid ${C.blue}` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
-        <SectionTitle sub="Track deals and check them against the plant's open order backlog before committing.">Sales Pipeline & Capacity Link</SectionTitle>
-        <Badge tone="blue" icon={Users}>{active.length} Active Deal{active.length === 1 ? '' : 's'}</Badge>
-      </div>
-
-      {showAdd && canEdit && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, background: C.panelAlt, padding: 14, borderRadius: 8, marginBottom: 14 }}>
-          <TextField label="Client" list="crm-customers" value={f.client} onChange={e => setF({ ...f, client: e.target.value })} />
-          <datalist id="crm-customers">{customerOptions(md.customers).map(n => <option key={n} value={n} />)}</datalist>
-          <TextField label="Tonnage (MT)" type="number" value={f.tonnage} onChange={e => setF({ ...f, tonnage: e.target.value })} />
-          <TextField label="Expected close" type="date" value={f.expectedClose} onChange={e => setF({ ...f, expectedClose: e.target.value })} />
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>Stage
-            <select value={f.stage} onChange={e => setF({ ...f, stage: e.target.value })} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
-              {CRM_STAGES.map(s => <option key={s}>{s}</option>)}
-            </select>
-          </label>
-          <div style={{ alignSelf: 'end' }}><Button onClick={submit}>Save Deal</Button></div>
-        </div>
-      )}
-
-      {!list.length ? (
-        <div style={{ padding: 16, background: C.panelAlt, borderRadius: 8, fontSize: 13, color: C.subtext }}>No deals yet.{canEdit ? ' Use "Add New Deal" to start the pipeline.' : ''}</div>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560 }}>
-            <thead>
-              <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                <th style={thStyle}>Client</th><th style={thStyle}>Tonnage</th><th style={thStyle}>Stage</th><th style={thStyle}>Close</th><th style={thStyle}>Capacity Check</th>{canEdit && <th style={thStyle} />}
-              </tr>
-            </thead>
-            <tbody>
-              {list.map(d => {
-                const cap = capacityOf(d);
-                return (
-                  <tr key={d.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
-                    <td style={{ padding: '10px 14px', fontWeight: 600, color: C.ink }}>{d.client}</td>
-                    <td style={{ padding: '10px 14px', fontWeight: 700, color: C.copperDark }}>{d.tonnage} MT</td>
-                    <td style={{ padding: '10px 14px' }}>
-                      {canEdit
-                        ? <select value={d.stage} onChange={e => onUpdateDeal(d.id, { stage: e.target.value })} style={selStyle}>{CRM_STAGES.map(s => <option key={s}>{s}</option>)}</select>
-                        : <span style={{ background: C.blueSoft, color: C.blue, padding: '4px 8px', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>{d.stage}</span>}
-                    </td>
-                    <td style={{ padding: '10px 14px', color: C.subtext }}>{d.expectedClose || '—'}</td>
-                    <td style={{ padding: '10px 14px' }}>
-                      {cap && <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: cap.ok === false ? C.red : cap.ok ? C.green : C.faint, fontWeight: 600 }}>
-                        {cap.ok === false ? <AlertTriangle size={14} /> : cap.ok ? <Check size={14} /> : null}{cap.text}
-                      </span>}
-                    </td>
-                    {canEdit && <td style={{ padding: '10px 14px' }}><Button variant="danger" icon={Trash2} onClick={() => { if (window.confirm(`Delete the deal with ${d.client}?`)) onDeleteDeal(d.id); }} /></td>}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {canEdit && <div style={{ marginTop: 14 }}><Button variant="secondary" icon={showAdd ? X : Plus} onClick={() => setShowAdd(v => !v)}>{showAdd ? 'Close' : 'Add New Deal'}</Button></div>}
-    </Card>
-  );
-}
-
-function MarketIntelligence({ settings }) {
-  const lme = Number(settingValue(settings, 'lmeRateUsd')) || 0;
-  const conv = Number(settingValue(settings, 'conversionCostUsd')) || 0;
-  const masterComp = settingValue(settings, 'competitorQuoteUsd');
-  const [compEdit, setCompEdit] = useState(null);
-  const [undercut, setUndercut] = useState(100);
-
-  const competitor = Number(compEdit ?? masterComp) || 0;
-  const floor = lme + conv;
-  const gap = competitor - floor;
-  const suggested = competitor - (Number(undercut) || 0);
-  const marginAtSuggested = suggested - floor;
-  const ready = lme > 0 && competitor > 0;
-  const money = (n) => `$${Math.round(n).toLocaleString()}`;
-
-  return (
-    <Card style={{ borderLeft: `4px solid #10B981` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
-        <SectionTitle sub="Your floor price (LME + conversion) against a competitor's quote.">Market Intelligence</SectionTitle>
-        {ready && <Badge tone={gap > 0 ? 'green' : 'red'} icon={TrendingUp}>{gap > 0 ? 'Margin Protected' : 'Below Floor'}</Badge>}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
-        <TextField label="Competitor quote ($/MT)" type="number" value={compEdit ?? masterComp} onChange={e => setCompEdit(e.target.value)} placeholder="e.g. 9550" />
-        <TextField label="Undercut by ($/MT)" type="number" value={undercut} onChange={e => setUndercut(e.target.value)} />
-      </div>
-
-      {!ready ? (
-        <div style={{ padding: 16, background: C.panelAlt, borderRadius: 8, fontSize: 13, color: C.subtext }}>
-          Enter a competitor quote above and make sure the LME rate is set in Master › Targets & capacity to see the comparison.
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, textAlign: 'center' }}>
-            <div style={{ background: C.panelAlt, padding: 12, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
-              <div style={{ fontSize: 11, color: C.subtext, textTransform: 'uppercase', fontWeight: 700 }}>Our Floor Price</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: C.ink, marginTop: 4 }}>{money(floor)}</div>
-              <div style={{ fontSize: 10, color: C.faint }}>LME + Conversion</div>
-            </div>
-            <div style={{ background: '#FEF2F2', padding: 12, borderRadius: 8, border: '1px solid #FECACA' }}>
-              <div style={{ fontSize: 11, color: '#991B1B', textTransform: 'uppercase', fontWeight: 700 }}>Competitor Quote</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: '#7F1D1D', marginTop: 4 }}>{money(competitor)}</div>
-              <div style={{ fontSize: 10, color: '#B91C1C' }}>As entered</div>
-            </div>
-            <div style={{ background: gap > 0 ? '#F0FDF4' : '#FEF2F2', padding: 12, borderRadius: 8, border: `1px solid ${gap > 0 ? '#BBF7D0' : '#FECACA'}` }}>
-              <div style={{ fontSize: 11, color: gap > 0 ? '#166534' : '#991B1B', textTransform: 'uppercase', fontWeight: 700 }}>Margin If Matched</div>
-              <div style={{ fontSize: 18, fontWeight: 800, color: gap > 0 ? '#15803D' : '#7F1D1D', marginTop: 4 }}>{gap >= 0 ? '+' : '−'} {money(Math.abs(gap))}/MT</div>
-              <div style={{ fontSize: 10, color: C.subtext }}>over floor</div>
-            </div>
-          </div>
-          <div style={{ padding: 14, background: C.panelAlt, borderRadius: 8, fontSize: 13, color: C.subtext, lineHeight: '1.5' }}>
-            <strong>Suggestion:</strong>{' '}
-            {suggested < floor
-              ? <>Undercutting by {money(Number(undercut) || 0)} would put the price at {money(suggested)}, <span style={{ color: C.red, fontWeight: 700 }}>below your floor of {money(floor)}</span>. Reduce the undercut or decline this bid.</>
-              : <>Quoting <strong>{money(suggested)}/MT</strong> beats the competitor by {money(Number(undercut) || 0)} and still leaves <span style={{ color: C.green, fontWeight: 700 }}>{money(marginAtSuggested)}/MT</span> over your floor price.</>}
-          </div>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function MobileExecutiveWidgets({ settings, maintenanceLogs, deliveries }) {
-  const lme = Number(settingValue(settings, 'lmeRateUsd')) || 0;
-  const today = todayKey();
-  const totalMachines = DPR_MACHINE_ROWS.length;
-  const down = new Set((maintenanceLogs || []).filter(m => m.status !== 'Resolved' && dprMachineExists(m.machineId)).map(m => m.machineId)).size;
-  const todays = (Array.isArray(deliveries) ? deliveries : []).filter(d => d.date === today);
-  const dispatchedMT = todays.reduce((s, d) => s + (Number(d.totalKg) || 0), 0) / 1000;
-
-  return (
-    <Card style={{ padding: 0, overflow: 'hidden', background: '#f3f4f6', border: 'none', boxShadow: 'none' }}>
-      <div style={{ padding: '20px 20px 10px' }}>
-        <SectionTitle sub="Glanceable numbers, sized like a phone screen.">Mobile Command View</SectionTitle>
-      </div>
-      <div style={{ maxWidth: 400, margin: '0 auto', background: '#000', padding: 12, borderRadius: 32, border: '6px solid #e5e7eb' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div style={{ background: '#1c1c1e', padding: 16, borderRadius: 20, color: '#fff', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 140 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#8e8e93', fontSize: 12, fontWeight: 600 }}>
-              <TrendingUp size={14} color="#34c759" /> LME COPPER
-            </div>
-            <div>
-              <div style={{ fontSize: lme ? 24 : 18, fontWeight: 700 }}>{lme ? `$${lme.toLocaleString()}` : 'Not set'}</div>
-              <div style={{ fontSize: 12, color: '#8e8e93', fontWeight: 600 }}>{lme ? 'per MT · from Master' : 'set in Master'}</div>
-            </div>
-          </div>
-
-          <div style={{ background: '#1c1c1e', padding: 16, borderRadius: 20, color: '#fff', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 140 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#8e8e93', fontSize: 12, fontWeight: 600 }}>
-              <Activity size={14} color="#0a84ff" /> MACHINES DOWN
-            </div>
-            <div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: down ? '#ff453a' : '#fff' }}>{down}<span style={{ fontSize: 16, color: '#8e8e93' }}> / {totalMachines}</span></div>
-              <div style={{ fontSize: 12, color: down ? '#ff453a' : '#34c759', fontWeight: 600 }}>{down ? 'Open breakdowns' : 'All clear'}</div>
-            </div>
-          </div>
-
-          <div style={{ gridColumn: 'span 2', background: 'linear-gradient(135deg, #0a84ff 0%, #005bb5 100%)', padding: 16, borderRadius: 20, color: '#fff' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, opacity: 0.9 }}>DISPATCH TODAY</div>
-              <Check size={16} />
-            </div>
-            <div style={{ fontSize: 32, fontWeight: 800 }}>{dispatchedMT.toFixed(1)} MT</div>
-            <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>{todays.length} deliver{todays.length === 1 ? 'y' : 'ies'} posted from {PLANT_NAME}.</div>
-          </div>
-        </div>
-      </div>
-    </Card>
-  );
-}
-
-/* =========================================================================
-   AI DEMAND FORECASTING (PROACTIVE SALES)
-   ========================================================================= */
-
-/* =========================================================================
-   LIVE-DATA HELPERS FOR THE DASHBOARD WIDGETS
-   ========================================================================= */
 
 // Maintenance alerts from real breakdown history (MTBF) and overdue PM tasks.
 function computeMaintenanceAlerts(maintenanceLogs, pmTasks, nowMs = Date.now()) {
@@ -3519,7 +3308,7 @@ function AIDemandForecasting({ orders, onDraft }) {
    COMMAND CENTER (predictive maintenance banner + widget picker)
    ========================================================================= */
 
-const DASHBOARD_WIDGETS = ['Demand AI', 'CRM', 'Market Intel', 'Mobile UI', 'Scheduler', 'AI Predictor', 'Sales', 'Floor Map', 'Passports', 'OEE', 'Energy', 'Tooling'];
+const DASHBOARD_WIDGETS = ['Demand AI', 'Scheduler', 'AI Predictor', 'Yield & Loss', 'Reject Pareto', 'Sales', 'Floor Map', 'Passports', 'OEE', 'Energy', 'Tooling'];
 
 function CommandCenter({ activeWidgets, toggleWidget, alerts, onReset }) {
   const predictiveAlerts = alerts || [];
@@ -3566,9 +3355,431 @@ function CommandCenter({ activeWidgets, toggleWidget, alerts, onReset }) {
   );
 }
 
-function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenanceLogs, dprEntries, rawConsumption, capaRecords, pmTasks, setTab, planMeta, spinnerPlans, dispatchPlans, deliveries, heats, settings, costData, machineProd, user, toolingItems, energyLogs, capacities, crmDeals, onAddDeal, onUpdateDeal, onDeleteDeal }) {
+/* =========================================================================
+   REPORTS & DOWNLOADS  — every Excel file the plant needs, in one place.
+   To add a report: push one entry into REPORTS below. It then shows up in the Reports tab
+   automatically, and can be dropped on any screen with <ReportButton id="your-id" />.
+   ========================================================================= */
+const ReportCtx = createContext(null);   // App provides the plant data here so any screen can offer a download
+
+const inRangeIso = (iso, rg) => {
+  if (!rg || (!rg.from && !rg.to)) return true;
+  if (!iso) return false;
+  const k = isoToLocalKey(iso) || String(iso).slice(0, 10);
+  return (!rg.from || k >= rg.from) && (!rg.to || k <= rg.to);
+};
+const inRangeDay = (day, rg) => (!rg || (!rg.from && !rg.to)) ? true : !!day && (!rg.from || String(day).slice(0, 10) >= rg.from) && (!rg.to || String(day).slice(0, 10) <= rg.to);
+// unknown record shapes (energy logs, CAPA, DPR ...) -> one flat row; nested objects become "a.b", arrays become text
+function flatRow(o, prefix = '', out = {}) {
+  Object.entries(o || {}).forEach(([k, v]) => {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (Array.isArray(v)) out[key] = JSON.stringify(v);
+    else if (v && typeof v === 'object') flatRow(v, key, out);
+    else out[key] = v ?? '';
+  });
+  return out;
+}
+const minutesOr = (v) => (v == null || v === '' ? '' : Number(v));
+
+function computeYield(batches, month) {
+  const rows = {};
+  (batches || []).forEach(b => {
+    const m = b.flow?.machine, c = m?.coils; if (!c) return;
+    const day = m.endedAt ? isoToLocalKey(m.endedAt) : null;
+    if (month && (!day || day.slice(0, 7) !== month)) return;
+    const key = m.machine || b.routeMachine || b.route || '—';
+    const r = (rows[key] ||= { machine: key, route: b.route || '', runs: 0, inputKg: 0, acceptedKg: 0, rejectedKg: 0, lossKg: 0, coils: 0, rejectedCoils: 0 });
+    r.runs += 1; r.inputKg += Number(c.inputKg) || 0; r.acceptedKg += Number(c.acceptedKg) || 0; r.rejectedKg += Number(c.rejectedKg) || 0;
+    r.lossKg += Number(c.lossKg) || 0; r.coils += Number(c.made) || 0; r.rejectedCoils += Number(c.rejected) || 0;
+  });
+  return Object.values(rows).map(r => ({ ...r, yieldPct: r.inputKg > 0 ? (r.acceptedKg / r.inputKg) * 100 : null, rejectPct: r.inputKg > 0 ? (r.rejectedKg / r.inputKg) * 100 : null, lossPct: r.inputKg > 0 ? (r.lossKg / r.inputKg) * 100 : null }))
+    .sort((a, b) => String(a.machine).localeCompare(String(b.machine)));
+}
+// every kg thrown away, by reason: stage scrap entries + rejected coils
+function computeRejectReasons(batches, month) {
+  const map = {};
+  const add = (reason, kg, where) => { const k = reason || 'Not stated'; const e = (map[k] ||= { reason: k, kg: 0, count: 0, where: {} }); e.kg += Number(kg) || 0; e.count += 1; e.where[where] = (e.where[where] || 0) + (Number(kg) || 0); };
+  (batches || []).forEach(b => {
+    (b.scrapLog || []).forEach(r => { if (!month || isoToLocalKey(r.at).slice(0, 7) === month) add(r.reason, r.qty, r.stage || 'Stage'); });
+    const m = b.flow?.machine, c = m?.coils;
+    if (c && Number(c.rejectedKg) > 0 && (!month || (m.endedAt && isoToLocalKey(m.endedAt).slice(0, 7) === month))) add(c.rejectReason, c.rejectedKg, `Coils ${b.route || ''}`.trim());
+  });
+  const list = Object.values(map).sort((a, b) => b.kg - a.kg);
+  const total = list.reduce((s, x) => s + x.kg, 0);
+  let cum = 0;
+  return list.map(x => { cum += x.kg; return { ...x, pct: total > 0 ? (x.kg / total) * 100 : 0, cumPct: total > 0 ? (cum / total) * 100 : 0 }; });
+}
+
+const REPORTS = [
+  { id: 'management', group: 'Management', title: 'Management pack', desc: 'One-page KPIs, open & overdue orders, WIP by stage, this month\'s dispatch and the alert lists.',
+    build: (c, rg) => {
+      const month = todayKey().slice(0, 7);
+      const open = (c.orders || []).filter(o => !isOrderClosed(o));
+      const overdue = open.filter(o => isOverdue(o.dueDate, o.status));
+      const packedMT = packedOutputMT(c.batches, monthStartKey(todayKey()), todayKey());
+      const mDeliv = (c.deliveries || []).filter(d => String(d.date || '').slice(0, 7) === month);
+      const stageCount = {};
+      (c.batches || []).forEach(b => { if (!isPullBatch(b)) return; const st = batchFlowState(b); const lab = FLOW_STATE_INFO[st]?.label || st; const e = (stageCount[lab] ||= { Stage: lab, Orders: 0, 'Qty (kg)': 0 }); e.Orders += 1; e['Qty (kg)'] += bufferQty(b) || 0; });
+      const low = (c.rawItems || []).filter(r => Number(r.qty) <= Number(r.reorderLevel));
+      const dies = (c.toolingItems || []).filter(d => d.usageMeters >= d.limitMeters * 0.9);
+      const yr = computeYield(c.batches, month);
+      const inKg = yr.reduce((s, r) => s + r.inputKg, 0), acc = yr.reduce((s, r) => s + r.acceptedKg, 0);
+      return {
+        'KPIs': [
+          { KPI: 'Report date', Value: todayKey() },
+          { KPI: 'Open orders', Value: open.length },
+          { KPI: 'Overdue orders', Value: overdue.length },
+          { KPI: 'Packed this month (MT)', Value: Number(fmtNum(packedMT, 2)) },
+          { KPI: 'Deliveries this month', Value: mDeliv.length },
+          { KPI: 'Dispatched this month (kg)', Value: Math.round(mDeliv.reduce((s, d) => s + (Number(d.totalKg) || 0), 0)) },
+          { KPI: 'Machine yield this month (%)', Value: inKg > 0 ? Number(((acc / inKg) * 100).toFixed(1)) : '' },
+          { KPI: 'Open breakdowns', Value: (c.maintenanceLogs || []).filter(m => m.status !== 'Resolved').length },
+          { KPI: 'Open CAPAs', Value: (c.capaRecords || []).filter(x => x.status !== 'Closed').length },
+          { KPI: 'Low-stock raw materials', Value: low.length },
+          { KPI: 'Dies / plugs needing polish', Value: dies.length },
+        ],
+        'Open orders': open.map(o => ({ 'Order no': orderLabel(o), Customer: o.customer, Spec: orderTitle(o), Ordered: o.qty, UOM: o.unit, Dispatched: orderDispatchedQty(o), Pending: orderPendingQty(o), 'Delivery date': o.dueDate, Overdue: isOverdue(o.dueDate, o.status) ? 'YES' : '', Status: o.status })),
+        'WIP by stage': Object.values(stageCount),
+        'Low stock': low.map(r => ({ Material: r.name, 'On hand': r.qty, Unit: r.unit, 'Reorder level': r.reorderLevel })),
+        'Dies near limit': dies.map(d => ({ Type: d.type || 'Die', ID: d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit': d.limitMeters, 'Used %': Math.round((d.usageMeters / d.limitMeters) * 100) })),
+      };
+    } },
+  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'Every pot charge: material in the pot, times in/out, heating / soaking / cooling minutes, who did it.',
+    build: (c, rg) => {
+      const ch = (c.charges || []).filter(x => inRangeIso(x.chargedAt, rg));
+      return {
+        'Charges': ch.map(x => ({ 'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy, 'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '', 'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin), 'Total cycle (min)': x.potInAt && x.potOutAt ? minutesBetween(x.potInAt, x.potOutAt) : '', 'Forwarded to packing': x.forwardedAt || '', 'Total kg': potKg(x.items), Sizes: potSizeText(x.items), Notes: x.notes || '' })),
+        'Pot contents': ch.flatMap(x => (x.items || []).map(i => ({ 'Charge no': x.chargeNo, Pot: x.potNo, 'Production order': i.productionOrderNo || '', 'Batch code': i.batchCode || '', Basket: i.basketNo || '', Spec: i.spec, Qty: i.qty, Unit: i.unit, Route: i.route || '', Machine: i.routeMachine || '' }))),
+      };
+    } },
+  { id: 'production', group: 'Production', title: 'Production orders & stages', desc: 'All production orders with route, size, stage, quantities, plus the scrap log.',
+    build: (c, rg) => {
+      const bs = (c.batches || []).filter(b => inRangeIso(b.startedAt, rg));
+      return {
+        'Production orders': bs.map(b => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Heat: (c.heats || []).find(h => h.id === b.heatId)?.furnace || b.furnace || '', 'Shell no.': b.shellNo ?? '', Spec: b.spec || '', Qty: b.qty, Unit: b.unit, Status: b.status, 'Flow state': isPullBatch(b) ? (FLOW_STATE_INFO[batchFlowState(b)]?.label || '') : '', Route: b.route || '', Machine: b.routeMachine || '', Spinner: b.spinnerMachine || '', Basket: b.basketNo || '', 'Current stage': batchStages(b)[b.currentStageIndex] || '', Started: b.startedAt, 'Scrap kg': (b.scrapLog || []).reduce((s, r) => s + Number(r.qty || 0), 0) })),
+        'Scrap log': bs.flatMap(b => (b.scrapLog || []).map(r => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Stage: r.stage, 'Qty (kg)': r.qty, Reason: r.reason, At: r.at, By: r.by }))),
+        'History': bs.flatMap(b => (b.history || []).map(h => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Event: h.label, At: h.at, By: h.by }))),
+      };
+    } },
+  { id: 'spinner', group: 'Production', title: 'Spinner pass log', desc: 'Pass-by-pass target vs actual OD, thickness and RPM, the die used, and final-pass results.',
+    build: (c, rg) => {
+      const rows = [], finals = [];
+      (c.batches || []).forEach(b => (b.passMeasurements || []).filter(m => m.stage === 'Spinner' && inRangeIso(m.at, rg)).forEach(m => {
+        finals.push({ 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Machine: b.spinnerMachine || '', Standard: m.standardName || '', 'Target OD': m.targetOD ?? '', 'Actual OD': m.actualOD ?? '', 'OD ok': m.withinToleranceOD == null ? '' : m.withinToleranceOD ? 'Yes' : 'NO', 'Target thk': m.targetThickness ?? '', 'Actual thk': m.actualThickness ?? '', 'Thk ok': m.withinToleranceThickness == null ? '' : m.withinToleranceThickness ? 'Yes' : 'NO', Die: m.dieId || '', 'Drawn (m)': m.dieMeters ?? '', At: m.at, By: m.by || '' });
+        (m.passLogs || []).forEach(p => rows.push({ 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Pass: p.passNo, 'Target OD': p.targetOD, 'Actual OD': p.actualOD, 'Target thk': p.targetThk, 'Actual thk': p.actualThk, 'Target RPM': p.targetRpm ?? '', 'Actual RPM': p.actualRpm, Die: m.dieId || '', At: m.at }));
+      }));
+      return { 'Final pass': finals, 'Pass by pass': rows };
+    } },
+  { id: 'coils', group: 'Production', title: 'Coil output, yield & loss', desc: 'Coils made / accepted / rejected by run with kg, metres and yield % per machine.',
+    build: (c, rg) => {
+      const runs = (c.batches || []).filter(b => b.flow?.machine?.coils && inRangeIso(b.flow.machine.endedAt, rg));
+      const month = rg?.from ? rg.from.slice(0, 7) : null;
+      return {
+        'Runs': runs.map(b => { const m = b.flow.machine, k = m.coils, gm = calcGramPerMeter(b.targetOD, b.targetThickness); return { 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Route: b.route || '', Machine: m.machine, Basket: m.basketNo, Started: m.startedAt, Ended: m.endedAt || '', 'Input kg': k.inputKg ?? '', 'Coils made': k.made, 'Coils accepted': k.accepted, 'Coils rejected': k.rejected, 'Accepted kg': k.acceptedKg, 'Rejected kg': k.rejectedKg, 'Loss kg': k.lossKg ?? '', 'Accepted metres': gm > 0 ? Math.round(metersFromKg(k.acceptedKg, gm)) : '', 'Rejected metres': gm > 0 ? Math.round(metersFromKg(k.rejectedKg, gm)) : '', 'Reject reason': k.rejectReason || '', 'Yield %': Number(k.inputKg) > 0 ? Number(((k.acceptedKg / k.inputKg) * 100).toFixed(1)) : '' }; }),
+        'Yield by machine': computeYield(runs, null).map(r => ({ Machine: r.machine, Route: r.route, Runs: r.runs, 'Input kg': Math.round(r.inputKg), 'Accepted kg': Math.round(r.acceptedKg), 'Rejected kg': Math.round(r.rejectedKg), 'Loss kg': Math.round(r.lossKg), 'Yield %': r.yieldPct == null ? '' : Number(r.yieldPct.toFixed(1)), 'Reject %': r.rejectPct == null ? '' : Number(r.rejectPct.toFixed(1)) })),
+      };
+    } },
+  { id: 'melting', group: 'Production', title: 'Melting heats', desc: 'Heats cast: furnace, raw material charged, shells and weights.',
+    build: (c, rg) => ({ 'Heats': (c.heats || []).filter(h => inRangeIso(h.at, rg)).map(h => ({ Date: h.date, Furnace: h.furnace, 'Cathode MT': h.raw?.cathodeMT ?? '', 'Billet MT': h.raw?.billetMT ?? '', 'Rod MT': h.raw?.rodMT ?? '', 'Total raw MT': h.raw?.totalMT ?? '', Shells: (h.shells || []).map(s => `${s.code} (${s.weightKg} kg)`).join(' | '), 'Shell weight kg': (h.shells || []).reduce((s, x) => s + (Number(x.weightKg) || 0), 0), By: h.by })) }) },
+  { id: 'quality', group: 'Quality', title: 'Quality measurements & rejects', desc: 'Every pass measurement with tolerance verdict, plus the reject-reason Pareto.',
+    build: (c, rg) => ({
+      'Measurements': (c.batches || []).flatMap(b => (b.passMeasurements || []).filter(m => inRangeIso(m.at, rg)).map(m => ({ 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Stage: m.stage, Standard: m.standardName || '', 'Target OD': m.targetOD ?? '', 'Tol OD': m.toleranceOD ?? '', 'Actual OD': m.actualOD ?? '', 'OD ok': m.withinToleranceOD == null ? '' : m.withinToleranceOD ? 'Yes' : 'NO', 'Target thk': m.targetThickness ?? '', 'Tol thk': m.toleranceThickness ?? '', 'Actual thk': m.actualThickness ?? '', 'Thk ok': m.withinToleranceThickness == null ? '' : m.withinToleranceThickness ? 'Yes' : 'NO', At: m.at, By: m.by || '' }))),
+      'Reject Pareto': computeRejectReasons(c.batches, rg?.from && rg?.to && rg.from.slice(0, 7) === rg.to.slice(0, 7) ? rg.from.slice(0, 7) : null).map(r => ({ Reason: r.reason, 'Kg': Number(r.kg.toFixed(1)), Count: r.count, '% of total': Number(r.pct.toFixed(1)), 'Cumulative %': Number(r.cumPct.toFixed(1)) })),
+      'Quality releases': (c.batches || []).filter(b => b.flow?.quality).map(b => ({ 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Lot: b.flow.quality.lotNo, Decision: b.flow.quality.status, Note: b.flow.quality.note || '', By: b.flow.quality.releasedBy || b.flow.quality.holdBy || '' })),
+    }) },
+  { id: 'dispatch', group: 'Sales & dispatch', title: 'Orders & deliveries', desc: 'Orders with pending quantity and every delivery posted.',
+    build: (c, rg) => ({
+      'Orders': (c.orders || []).filter(o => inRangeDay(o.orderDate, rg)).map(o => ({ 'Order no': orderLabel(o), Customer: o.customer, 'Product type': o.productType || '', Spec: orderTitle(o), Ordered: o.qty, UOM: o.unit, Dispatched: orderDispatchedQty(o), Pending: orderPendingQty(o), 'Order date': o.orderDate, 'Delivery date': o.dueDate, Status: o.status, Salesperson: o.salesperson || '' })),
+      'Deliveries': (c.deliveries || []).filter(d => inRangeDay(d.date, rg)).map(d => ({ Delivery: d.deliveryNo, Date: d.date, 'Order no': d.orderNo || '', Customer: d.customer, Qty: d.totalQty, UOM: d.unit, 'Kg issued': d.totalKg ?? '', 'Production orders': (d.lines || []).map(l => l.productionOrderNo || l.batchCode).join(', '), Vehicle: d.vehicle || '', 'LR no': d.lrNo || '' })),
+    }) },
+  { id: 'inventory', group: 'Stores', title: 'Inventory', desc: 'Raw material balances (with reorder flag) and finished goods.',
+    build: (c) => ({
+      'Raw materials': (c.rawItems || []).map(r => ({ Material: r.name, Kind: rawKindOf(r), 'On hand': r.qty, Unit: r.unit, 'Reorder level': r.reorderLevel, 'Needs reorder': Number(r.qty) <= Number(r.reorderLevel) ? 'YES' : '' })),
+      'Finished goods': (c.finishedItems || []).map(f => flatRow(f)),
+    }) },
+  { id: 'maintenance', group: 'Maintenance', title: 'Breakdowns', desc: 'Breakdown log with time to resolve, delay reasons and resolution notes.',
+    build: (c, rg) => ({ 'Breakdowns': (c.maintenanceLogs || []).filter(m => inRangeIso(m.occurredAt, rg)).map(m => ({ Machine: m.machineId, Department: m.department, Description: m.description, Occurred: m.occurredAt, Status: m.status, 'Reported by': m.reportedBy, Resolved: m.resolvedAt || '', 'Downtime (min)': m.resolvedAt ? minutesBetween(m.occurredAt, m.resolvedAt) : '', 'Delay reason': m.delayReason || '', 'Resolution notes': m.resolutionNotes || '' })) }) },
+  { id: 'tooling', group: 'Maintenance', title: 'Tooling register', desc: 'Dies and plugs with meters drawn, wear limit and remaining life.',
+    build: (c) => ({ 'Tooling': (c.toolingItems || []).map(d => ({ Type: d.type || 'Die', 'Tool ID': d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit (m)': d.limitMeters, 'Remaining (m)': Math.max(0, d.limitMeters - d.usageMeters), 'Used %': d.limitMeters > 0 ? Math.round((d.usageMeters / d.limitMeters) * 100) : '', Status: d.status === 'Polishing' ? 'Sent for polishing' : d.usageMeters >= d.limitMeters * 0.9 ? 'Needs polish' : 'Active' })) }) },
+  { id: 'energy', group: 'Maintenance', title: 'Machine energy', desc: 'Every kWh meter reading entered per machine.',
+    build: (c, rg) => ({ 'Energy readings': (c.energyLogs || []).filter(e => inRangeDay(e.date, rg)).map(e => flatRow(e)) }) },
+  { id: 'capa', group: 'Quality', title: 'CAPA register', desc: 'Corrective and preventive actions with status.',
+    build: (c, rg) => ({ 'CAPA': (c.capaRecords || []).filter(x => inRangeIso(x.createdAt, rg)).map(x => flatRow(x)) }) },
+  { id: 'dpr', group: 'Management', title: 'Daily production reports', desc: 'Saved shift reports (flattened — one row per saved report).',
+    build: (c, rg) => ({ 'Daily reports': Object.entries(c.dprEntries || {}).filter(([k]) => inRangeDay(k.split('::')[0], rg)).map(([k, v]) => ({ Key: k, ...flatRow(v) })) }) },
+];
+const REPORT_BY_ID = Object.fromEntries(REPORTS.map(r => [r.id, r]));
+function runReport(id, ctx, rg, filename) {
+  const r = REPORT_BY_ID[id]; if (!r || !ctx) return false;
+  try { return exportToExcel(filename || `neelsuite-${id}-${todayKey()}.xlsx`, r.build(ctx, rg)); } catch (e) { console.error('Report failed', id, e); return false; }
+}
+// drop this on any screen: <ReportButton id="tooling" />  or  <ReportButton ids={['annealing','coils']} />
+function ReportButton({ id, ids, label }) {
+  const ctx = useContext(ReportCtx);
+  const list = ids || [id];
+  return (
+    <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
+      {list.map(i => REPORT_BY_ID[i] && <ExportButton key={i} label={label || (list.length > 1 ? REPORT_BY_ID[i].title : 'Export Excel')} onExport={() => runReport(i, ctx)} />)}
+    </span>
+  );
+}
+
+// Mill-test-style certificate built from what the app really holds. No chemistry / mechanical test results are recorded in the app, so none are printed.
+function printCertificate(batch, ctx) {
+  const heat = (ctx.heats || []).find(h => h.id === batch.heatId);
+  const order = batch.orderId ? (ctx.orders || []).find(o => o.id === batch.orderId) : null;
+  const latest = {};
+  (batch.passMeasurements || []).forEach(m => { if (!latest[m.stage] || String(m.at) > String(latest[m.stage].at)) latest[m.stage] = m; });
+  const esc = (v) => String(v ?? '—').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  const q = batch.flow?.quality, pk = batch.flow?.packing, an = batch.flow?.annealing;
+  const ok = (v) => v === true ? 'Pass' : v === false ? 'OUT OF TOLERANCE' : 'No target';
+  const rows = Object.values(latest).sort((a, b) => String(a.at).localeCompare(String(b.at))).map(m => `<tr><td>${esc(m.stage)}</td><td>${esc(m.targetOD)} ± ${esc(m.toleranceOD)}</td><td>${esc(m.actualOD)}</td><td>${ok(m.withinToleranceOD)}</td><td>${esc(m.targetThickness)} ± ${esc(m.toleranceThickness)}</td><td>${esc(m.actualThickness)}</td><td>${ok(m.withinToleranceThickness)}</td></tr>`).join('');
+  const win = window.open('', '', 'width=900,height=800'); if (!win) return false;
+  win.document.write(`<html><head><title>Test Certificate ${esc(batch.productionOrderNo || batch.batchCode)}</title><style>body{font-family:Inter,Arial,sans-serif;padding:36px;color:#32363a;font-size:13px}h1{margin:0 0 4px;font-size:22px}h2{font-size:14px;margin:22px 0 8px;border-bottom:1px solid #bbb;padding-bottom:4px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6px 8px;text-align:left}th{background:#f3f3f3}.kv td:first-child{width:200px;font-weight:600;background:#fafafa}.note{margin-top:18px;font-size:11px;color:#777}@media print{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body>`);
+  win.document.write(`<h1>INSPECTION / TEST CERTIFICATE</h1><div>${esc(PLANT_NAME)} · issued ${esc(formatDate(new Date().toISOString()))}</div>`);
+  win.document.write(`<h2>Product</h2><table class="kv"><tr><td>Production order</td><td>${esc(batch.productionOrderNo)}</td></tr><tr><td>Batch code</td><td>${esc(batch.batchCode)}</td></tr><tr><td>Size</td><td>${esc(batch.spec)}</td></tr><tr><td>Route</td><td>${esc(batch.route)}${batch.routeMachine ? ' · ' + esc(batch.routeMachine) : ''}</td></tr><tr><td>Quantity</td><td>${esc(fmtQty(batchNetQty(batch), batch.unit))}</td></tr>${order ? `<tr><td>Customer / order</td><td>${esc(order.customer)} · ${esc(orderLabel(order))}</td></tr>` : ''}</table>`);
+  win.document.write(`<h2>Traceability</h2><table class="kv"><tr><td>Heat / furnace</td><td>${esc(heat?.furnace)} · ${esc(heat?.date)}</td></tr><tr><td>Shell</td><td>${esc(batch.shellNo)}</td></tr><tr><td>Basket</td><td>${esc(batch.basketNo || batch.flow?.machine?.basketNo)}</td></tr><tr><td>Annealing</td><td>${an ? `Pot ${esc(an.potNo)} · charge ${esc(an.chargeNo)}${an.potOutAt ? ' · out ' + esc(formatDateTime(an.potOutAt)) : ''}` : 'Not applicable'}</td></tr><tr><td>Packed</td><td>${pk?.packedAt ? esc(fmtQty(pk.packedQty, batch.unit)) + ' · ' + esc(formatDateTime(pk.packedAt)) : '—'}</td></tr></table>`);
+  win.document.write(`<h2>Dimensional results (latest at each stage)</h2>${rows ? `<table><tr><th>Stage</th><th>OD target ± tol (mm)</th><th>OD actual</th><th>OD</th><th>Thk target ± tol (mm)</th><th>Thk actual</th><th>Thk</th></tr>${rows}</table>` : '<div>No measurements recorded.</div>'}`);
+  win.document.write(`<h2>Quality release</h2><table class="kv"><tr><td>Decision</td><td>${esc(q?.status)}</td></tr><tr><td>Inspection lot</td><td>${esc(q?.lotNo)}</td></tr><tr><td>Released by</td><td>${esc(q?.releasedBy || q?.holdBy)}</td></tr><tr><td>Remark</td><td>${esc(q?.note)}</td></tr></table>`);
+  win.document.write(`<div class="note">Chemical composition and mechanical test values are not recorded in this system and are not shown on this certificate.</div></body></html>`);
+  win.document.close(); win.focus(); setTimeout(() => { win.print(); }, 250);
+  return true;
+}
+
+function ReportsTab({ user }) {
+  const ctx = useContext(ReportCtx) || {};
+  const [from, setFrom] = useState(monthStartKey(todayKey()));
+  const [to, setTo] = useState(todayKey());
+  const [useRange, setUseRange] = useState(true);
+  const [certId, setCertId] = useState('');
+  const rg = useRange ? { from, to } : null;
+  const groups = [...new Set(REPORTS.map(r => r.group))];
+  const downloadAll = () => {
+    const sheets = {};
+    REPORTS.forEach(r => { try { Object.entries(r.build(ctx, rg)).forEach(([name, rows]) => { sheets[`${r.id.slice(0, 8)}-${name}`.slice(0, 31)] = rows; }); } catch (e) { console.error(e); } });
+    return exportToExcel(`neelsuite-full-pack-${todayKey()}.xlsx`, sheets);
+  };
+  const certBatches = (ctx.batches || []).filter(b => b.productionOrderNo || b.batchCode).sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || ''))).slice(0, 80);
+  const certBatch = certBatches.find(b => b.id === certId);
+  const inp = { padding: '7px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 };
+  return (
+    <div>
+      <SectionTitle sub="Download any file as Excel. The same buttons also appear on the screens where the data lives.">Reports & Downloads</SectionTitle>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12, color: C.subtext, display: 'flex', alignItems: 'center', gap: 6 }}><input type="checkbox" checked={useRange} onChange={e => setUseRange(e.target.checked)} /> Limit to dates</label>
+          <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>From<input aria-label="Report from" type="date" value={from} disabled={!useRange} onChange={e => setFrom(e.target.value)} style={inp} /></label>
+          <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>To<input aria-label="Report to" type="date" value={to} disabled={!useRange} onChange={e => setTo(e.target.value)} style={inp} /></label>
+          <ExportButton label="Download everything (one workbook)" onExport={downloadAll} />
+        </div>
+        <p style={{ fontSize: 12, color: C.subtext, margin: '10px 0 0' }}>The date range applies to reports that have dates. Stock, tooling and open-order lists always show the current position.</p>
+      </Card>
+      {groups.map(g => (
+        <Card key={g} style={{ marginBottom: 14 }}>
+          <h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600, margin: '0 0 10px' }}>{g}</h3>
+          {REPORTS.filter(r => r.group === g).map(r => (
+            <div key={r.id} data-testid={`report-${r.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', padding: '10px 0', borderTop: `1px solid ${C.borderSoft}` }}>
+              <div style={{ flex: '1 1 320px' }}><div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.title}</div><div style={{ fontSize: 12, color: C.subtext }}>{r.desc}</div></div>
+              <ExportButton label="Download Excel" onExport={() => runReport(r.id, ctx, rg)} />
+            </div>
+          ))}
+        </Card>
+      ))}
+      <Card>
+        <h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600, margin: '0 0 4px' }}>Inspection / test certificate</h3>
+        <p style={{ fontSize: 12, color: C.subtext, margin: '0 0 10px' }}>Prints a certificate for one production order: traceability, dimensional results and the quality release. Chemistry and mechanical tests are not recorded in the app, so they are not on it.</p>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select aria-label="Certificate batch" value={certId} onChange={e => setCertId(e.target.value)} style={{ ...inp, maxWidth: 340 }}>
+            <option value="">— choose a production order —</option>
+            {certBatches.map(b => <option key={b.id} value={b.id}>{b.productionOrderNo || b.batchCode} · {b.spec || ''}</option>)}
+          </select>
+          <Button icon={Printer} disabled={!certBatch} onClick={() => printCertificate(certBatch, ctx)}>Print certificate</Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// Audit trail: who did what, read from the audit_log table the app already writes to.
+function AuditTab({ user }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState('');
+  const [q, setQ] = useState('');
+  const [type, setType] = useState('');
+  const load = useCallback(async () => {
+    setRows(null); setErr('');
+    try {
+      await ensureFreshToken();
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/audit_log?select=*&order=created_at.desc&limit=1000`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(res.status === 401 || res.status === 403 ? 'Not allowed to read the audit log (database permissions).' : `Could not load (${res.status}).`);
+      setRows(await res.json());
+    } catch (e) { setErr(e.message || 'Could not load the audit log.'); setRows([]); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  const types = [...new Set((rows || []).map(r => r.entity_type).filter(Boolean))].sort();
+  const shown = (rows || []).filter(r => (!type || r.entity_type === type) && (!q || JSON.stringify(r).toLowerCase().includes(q.toLowerCase())));
+  const when = (r) => r.created_at || r.at || r.timestamp || '';
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+        <SectionTitle sub="Every recorded create / delete / status change, newest first (last 1,000).">Audit Trail</SectionTitle>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="secondary" icon={RefreshCw} onClick={load}>Refresh</Button>
+          <ExportButton label="Export Excel" onExport={() => exportToExcel(`neelsuite-audit-${todayKey()}.xlsx`, { 'Audit trail': shown.map(r => ({ When: when(r), Actor: r.actor, Action: r.action, Type: r.entity_type, 'Entity id': r.entity_id, Details: r.details ? JSON.stringify(r.details) : '' })) })} />
+        </div>
+      </div>
+      <Card>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+          <input aria-label="Search audit" placeholder="Search name, action, id…" value={q} onChange={e => setQ(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, minWidth: 240 }} />
+          <select aria-label="Audit type" value={type} onChange={e => setType(e.target.value)} style={{ padding: '7px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }}>
+            <option value="">All types</option>{types.map(t => <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        {rows === null ? <p style={{ fontSize: 13, color: C.subtext }}>Loading…</p> : err ? <p role="alert" style={{ color: C.red, fontSize: 13 }}>{err}</p> : shown.length === 0 ? <EmptyState title="Nothing recorded yet." sub="Entries appear here as people create, change or delete records." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 720 }}>
+              <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['When', 'Who', 'Action', 'Type', 'Record', 'Details'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+              <tbody>{shown.slice(0, 300).map((r, i) => (
+                <tr key={r.id || i} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                  <td className="font-mono" style={{ padding: '8px 14px', whiteSpace: 'nowrap' }}>{when(r) ? formatDateTime(when(r)) : '—'}</td>
+                  <td style={{ padding: '8px 14px' }}>{r.actor}</td>
+                  <td style={{ padding: '8px 14px' }}><Badge tone={r.action === 'delete' ? 'red' : 'default'}>{r.action}</Badge></td>
+                  <td style={{ padding: '8px 14px', color: C.subtext }}>{r.entity_type}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px' }}>{r.entity_id}</td>
+                  <td style={{ padding: '8px 14px', color: C.subtext, maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.details ? JSON.stringify(r.details) : ''}>{r.details ? JSON.stringify(r.details) : ''}</td>
+                </tr>))}</tbody>
+            </table>
+            {shown.length > 300 && <p style={{ fontSize: 12, color: C.subtext }}>Showing the first 300 of {shown.length}. Export to Excel for all of them.</p>}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---- Dashboard widgets computed from real data ---- */
+function YieldLossWidget({ batches }) {
+  const month = todayKey().slice(0, 7);
+  const rows = computeYield(batches, month);
+  const stageScrap = {};
+  (batches || []).forEach(b => (b.scrapLog || []).forEach(r => { if (isoToLocalKey(r.at).slice(0, 7) === month) stageScrap[r.stage || '—'] = (stageScrap[r.stage || '—'] || 0) + (Number(r.qty) || 0); }));
+  const scrapList = Object.entries(stageScrap).sort((a, b) => b[1] - a[1]);
+  return (
+    <Card style={{ borderLeft: `4px solid ${C.green}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <SectionTitle sub={`Coil output vs basket weight in, runs finished in ${month}.`}>Yield & Loss</SectionTitle>
+        <ReportButton id="coils" label="Excel" />
+      </div>
+      {rows.length === 0 ? <EmptyState title="No finished runs this month." sub="Appears once coils are recorded on LWC / PCC / CTL runs." /> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+            <thead><tr style={{ textAlign: 'left', background: C.panelAlt }}>{['Machine', 'In kg', 'OK kg', 'Rejected', 'Yield'].map(h => <th key={h} style={{ padding: '6px 8px', color: C.subtext, fontSize: 11 }}>{h}</th>)}</tr></thead>
+            <tbody>{rows.map(r => (
+              <tr key={r.machine} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                <td style={{ padding: '6px 8px', fontWeight: 600 }}>{r.machine}</td>
+                <td className="font-mono" style={{ padding: '6px 8px' }}>{Math.round(r.inputKg).toLocaleString()}</td>
+                <td className="font-mono" style={{ padding: '6px 8px', color: C.green }}>{Math.round(r.acceptedKg).toLocaleString()}</td>
+                <td className="font-mono" style={{ padding: '6px 8px', color: r.rejectedKg ? C.red : C.ink }}>{Math.round(r.rejectedKg).toLocaleString()}</td>
+                <td style={{ padding: '6px 8px' }}><Badge tone={r.yieldPct == null ? 'default' : r.yieldPct >= 95 ? 'green' : r.yieldPct >= 90 ? 'amber' : 'red'}>{r.yieldPct == null ? '—' : `${r.yieldPct.toFixed(1)}%`}</Badge></td>
+              </tr>))}</tbody>
+          </table>
+        </div>
+      )}
+      {scrapList.length > 0 && <p style={{ fontSize: 12, color: C.subtext, margin: '10px 0 0' }}><strong>Scrap logged this month:</strong> {scrapList.map(([s, kg]) => `${s} ${Math.round(kg).toLocaleString()} kg`).join(' · ')}</p>}
+    </Card>
+  );
+}
+
+function RejectParetoWidget({ batches }) {
+  const [scope, setScope] = useState('month');
+  const list = computeRejectReasons(batches, scope === 'month' ? todayKey().slice(0, 7) : null).slice(0, 8);
+  return (
+    <Card style={{ borderLeft: `4px solid ${C.red}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <SectionTitle sub="Where material is being lost, biggest reason first (stage scrap + rejected coils).">Reject Pareto</SectionTitle>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {[['month', 'This month'], ['all', 'All time']].map(([k, l]) => <button key={k} type="button" onClick={() => setScope(k)} style={{ padding: '4px 10px', borderRadius: 999, fontSize: 12, cursor: 'pointer', border: `1px solid ${scope === k ? C.copper : C.border}`, background: scope === k ? C.copperFaint : C.panel, color: scope === k ? C.copperDark : C.subtext }}>{l}</button>)}
+          <ReportButton id="quality" label="Excel" />
+        </div>
+      </div>
+      {list.length === 0 ? <EmptyState title="No rejects or scrap logged." sub="Stage scrap and rejected coils appear here with their reasons." /> : (
+        <>
+          <div style={{ width: '100%', height: Math.max(160, list.length * 34) }}>
+            <ResponsiveContainer>
+              <BarChart data={list} layout="vertical" margin={{ left: 8, right: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="reason" width={130} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => [`${Number(v).toFixed(1)} kg`, 'Lost']} />
+                <Bar dataKey="kg" fill={C.red} radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <p style={{ fontSize: 12, color: C.subtext, margin: '8px 0 0' }}>Top reason: <strong>{list[0].reason}</strong> — {list[0].kg.toFixed(1)} kg ({list[0].pct.toFixed(0)}% of the total).</p>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// Replaces the old hard-coded "predictions": every line below is calculated from data actually recorded in the app.
+function PredictiveIntelligence() {
+  const c = useContext(ReportCtx) || {};
+  const insights = [];
+  (c.toolingItems || []).filter(d => d.status !== 'Polishing' && d.limitMeters > 0 && d.usageMeters >= d.limitMeters * 0.9).forEach(d =>
+    insights.push({ type: 'Tooling', text: `${d.type || 'Die'} ${d.id} (${d.size}) has drawn ${d.usageMeters.toLocaleString()} m of its ${d.limitMeters.toLocaleString()} m limit (${Math.round((d.usageMeters / d.limitMeters) * 100)}%).`, action: 'Plan polishing' }));
+  const since = Date.now() - 30 * 86400000, byStage = {};
+  (c.batches || []).forEach(b => (b.passMeasurements || []).forEach(m => {
+    if (new Date(m.at).getTime() < since) return;
+    const e = (byStage[m.stage] ||= { n: 0, out: 0 }); e.n += 1; if (m.withinToleranceOD === false || m.withinToleranceThickness === false) e.out += 1;
+  }));
+  Object.entries(byStage).filter(([, e]) => e.n >= 5 && e.out / e.n >= 0.1).forEach(([st, e]) =>
+    insights.push({ type: 'Quality', text: `${st}: ${e.out} of ${e.n} passes in the last 30 days were out of tolerance (${Math.round((e.out / e.n) * 100)}%).`, action: 'Open SPC', tab: 'spc' }));
+  const top = computeRejectReasons(c.batches, todayKey().slice(0, 7))[0];
+  if (top && top.kg > 0) insights.push({ type: 'Loss', text: `Biggest loss this month: "${top.reason}" — ${top.kg.toFixed(1)} kg (${top.pct.toFixed(0)}% of all rejects and scrap).`, action: 'See Reject Pareto' });
+  const low = (c.rawItems || []).filter(r => Number(r.qty) <= Number(r.reorderLevel));
+  if (low.length) insights.push({ type: 'Supply', text: `${low.length} raw material${low.length > 1 ? 's are' : ' is'} at or below the reorder level: ${low.slice(0, 3).map(r => r.name).join(', ')}${low.length > 3 ? '…' : ''}.`, action: 'Open Inventory', tab: 'inventory' });
+  return (
+    <Card style={{ borderLeft: `4px solid ${C.copper}` }}>
+      <SectionTitle sub="Calculated from your logged data — nothing here is estimated by a model.">Plant Insights</SectionTitle>
+      {insights.length === 0 ? <EmptyState title="Nothing needs attention." sub="Tooling, quality, losses and stock are all within limits." /> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
+          {insights.map((i, idx) => (
+            <div key={idx} style={{ padding: 12, background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: C.copperDark, textTransform: 'uppercase', marginBottom: 6 }}>{i.type}</div>
+              <p style={{ margin: 0, fontSize: 13, color: C.ink, lineHeight: 1.55 }}>{i.text}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function EnergySummaryWidget({ energyLogs, batches, onOpen }) {
+  const month = todayKey().slice(0, 7);
+  const en = plantEnergyMonthKWh(energyLogs, month);
+  const packedMT = packedOutputMT(batches, monthStartKey(todayKey()), todayKey());
+  const kwhPerMT = en.kwh > 0 && packedMT > 0 ? en.kwh / packedMT : null;
+  return (
+    <Card>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <SectionTitle sub="This month, from the meter readings in the Machine Energy tab.">Energy</SectionTitle>
+        <ReportButton id="energy" label="Excel" />
+      </div>
+      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', margin: '6px 0 12px' }}>
+        <div><div style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>KWH THIS MONTH</div><div className="font-mono" style={{ fontSize: 22, fontWeight: 800 }}>{en.kwh > 0 ? Math.round(en.kwh).toLocaleString() : '—'}</div></div>
+        <div><div style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>KWH PER MT PACKED</div><div className="font-mono" style={{ fontSize: 22, fontWeight: 800 }}>{kwhPerMT != null ? Math.round(kwhPerMT).toLocaleString() : '—'}</div></div>
+      </div>
+      {en.kwh <= 0 && <p style={{ fontSize: 12.5, color: C.subtext, margin: '0 0 10px' }}>Needs at least two meter readings per machine this month.</p>}
+      {onOpen && <Button variant="secondary" onClick={onOpen}>Enter meter readings</Button>}
+    </Card>
+  );
+}
+
+function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenanceLogs, dprEntries, rawConsumption, capaRecords, pmTasks, setTab, planMeta, spinnerPlans, dispatchPlans, deliveries, heats, settings, costData, machineProd, user, toolingItems, energyLogs, capacities,  }) {
   const now = useNowTick();
-  const DEFAULT_WIDGETS = ['Demand AI', 'CRM', 'Market Intel', 'Sales'];
+  const DEFAULT_WIDGETS = ['Demand AI', 'Sales', 'Floor Map', 'Passports'];
   const widgetKey = `ctpm:dashboard_widgets:${String(user?.name || 'guest').toLowerCase()}`;   // remembered on this device, per person
   const [activeWidgets, setActiveWidgets] = useState(() => {
     try {
@@ -3701,18 +3912,18 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
       </div>
 {/* --- COMMAND CENTER & CUSTOMIZABLE WIDGET GRID --- */}
       <CommandCenter activeWidgets={activeWidgets} toggleWidget={toggleWidget} alerts={maintAlerts} onReset={() => setActiveWidgets(DEFAULT_WIDGETS)} />
-      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', marginBottom: 18 }}>
+      {/* minmax(320px) fits more widgets per row on most screens; alignItems:'start' stops short widgets stretching to match tall ones */}
+      <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', alignItems: 'start', marginBottom: 18 }}>
         {activeWidgets.includes('Demand AI') && <AIDemandForecasting orders={orders} onDraft={() => setActiveWidgets(p => p.includes('Sales') ? p : [...p, 'Sales'])} />}
-        {activeWidgets.includes('CRM') && <B2BCRMPipeline deals={crmDeals} orders={orders} settings={settings} user={user} onAddDeal={onAddDeal} onUpdateDeal={onUpdateDeal} onDeleteDeal={onDeleteDeal} />}
-        {activeWidgets.includes('Market Intel') && <MarketIntelligence settings={settings} />}
-        {activeWidgets.includes('Mobile UI') && <MobileExecutiveWidgets settings={settings} maintenanceLogs={maintenanceLogs} deliveries={deliveries} />}
         {activeWidgets.includes('Scheduler') && <DynamicScheduler spinnerPlans={spinnerPlans} maintenanceLogs={maintenanceLogs} capacities={capacities} onOpenPlan={() => open('plan')} />}
         {activeWidgets.includes('AI Predictor') && <PredictiveIntelligence />}
         {activeWidgets.includes('Sales') && <SalesQuotationEngine settings={settings} user={user} />}
         {activeWidgets.includes('Floor Map') && <StrategicFloorMap furnaces={furnaces} maintenanceLogs={maintenanceLogs} />}
         {activeWidgets.includes('Passports') && <DigitalProductPassport batches={batches} heats={heats} energyLogs={energyLogs} />}
         {activeWidgets.includes('OEE') && <OEEDashboard downtimeLogs={maintenanceLogs} planRows={[]} />}
-        {activeWidgets.includes('Energy') && <EnergyTracker onLogEnergy={(kwh) => alert('Logged ' + kwh + ' kWh')} />}
+        {activeWidgets.includes('Yield & Loss') && <YieldLossWidget batches={batches} />}
+        {activeWidgets.includes('Reject Pareto') && <RejectParetoWidget batches={batches} />}
+        {activeWidgets.includes('Energy') && <EnergySummaryWidget energyLogs={energyLogs} batches={batches} onOpen={() => setTab('energy')} />}
         {activeWidgets.includes('Tooling') && <ToolingManagement toolingData={toolingItems || []} />}
       </div>
       <ExecutiveRMOverview rawItems={rawItems} user={user} setTab={setTab} />
@@ -5535,8 +5746,9 @@ function DimensionFields({ label, target, setTarget, tolerance, setTolerance, ac
 // results are recorded for each characteristic (OD, wall thickness) and closed with a USAGE
 // DECISION -- A: accept, or R: send the ENTIRE lot for rework. Out-of-tolerance results
 // default to Rework; accepting them anyway needs a written reason ("accepted with deviation").
-function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, onLog, canDoRework = true, reinspect = null }) {
+function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, onLog, canDoRework = true, reinspect = null, user }) {
   const MDs = useContext(MasterDataCtx);
+  const isAdmin = user?.role === 'Admin';   // only the Admin may switch standard; everyone else gets the one matching the size
   const stds = standardsFor(MDs.standards, stageLabel);
   const stdRequired = !!(MDs.standardRequired || {})[stageLabel];
   const [standardId, setStandardId] = useState(() => (stds.length === 1 ? stds[0].id : (standardForSpec(stds, batch.spec)?.id || '')));
@@ -5572,6 +5784,8 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
   const defects = deviationDefects(live);
   const anyOut = defects.length > 0;
   const effective = isRolling ? (decision ?? (anyOut ? 'Rework' : 'Accept')) : 'Accept';
+  // g/m from the target (or the measured values when there is no target) -> scrap kg shown as metres
+  const gm = calcGramPerMeter(tOD !== '' ? tOD : actualOD, tThk !== '' ? tThk : actualThickness);
   const submit = () => {
     if (!valid) return;
     const r = onLog({
@@ -5603,9 +5817,15 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
       {locked && (
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.copperDark, fontWeight: 600, maxWidth: 420 }}>
           Standard <span style={{ fontWeight: 400, color: C.subtext, fontSize: 11.5 }}>(target and tolerance are fixed by the Admin in Master — you only enter what you measured)</span>
-          <select aria-label="Standard" value={standardId} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
-            <option value="">— choose the standard —</option>{stds.map(x => <option key={x.id} value={x.id}>{x.name}{x.spec ? ` · ${x.spec}` : ''}</option>)}
-          </select>
+          {isAdmin ? (
+            <select aria-label="Standard" value={standardId} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
+              <option value="">— choose the standard —</option>{stds.map(x => <option key={x.id} value={x.id}>{x.name}{x.spec ? ` · ${x.spec}` : ''}</option>)}
+            </select>
+          ) : (
+            <div data-testid="standard-readonly" style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.borderSoft}`, fontSize: 14, background: C.panelAlt, color: C.ink, fontWeight: 700 }}>
+              {std ? `${std.name}${std.spec ? ` · ${std.spec}` : ''}` : 'No matching standard found'}
+            </div>
+          )}
         </label>
       )}
       <DimensionFields label="OD" target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={setToleranceOD} actual={actualOD} setActual={setActualOD} onEnter={onEnter} locked={locked} />
@@ -5622,7 +5842,12 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
         {needsMachine && (
           <SelectField label={machineLabel} options={machineOptions.length ? ['— choose —', ...machineOptions] : ['— none set up —']} value={machine} onChange={e => setMachine(e.target.value)} />
         )}
-        <TextField label="Scrap qty here (optional)" type="number" min="0" value={scrapQty} onChange={e => setScrapQty(e.target.value)} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <TextField label="Scrap qty here (kg, optional)" type="number" min="0" value={scrapQty} onChange={e => setScrapQty(e.target.value)} />
+          {scrapQty && gm > 0 && (
+            <span data-testid="scrap-meters" style={{ fontSize: 11.5, color: C.subtext, fontWeight: 600 }}>≈ {fmtMeters(metersFromKg(scrapQty, gm))} meters of scrap</span>
+          )}
+        </div>
         {scrapQty && <SelectField label="Scrap reason" options={scrapReasons()} value={scrapReason} onChange={e => setScrapReason(e.target.value)} />}
       </div>
       {isRolling && (
@@ -5699,7 +5924,8 @@ function ReworkPanel({ batch, user, onComplete }) {
 // of today's plan -- they cannot type a different size or pick another route.
 // Spec, route, route machine, linked order, annealing and packing all come
 // from the plan line the manager entered.
-function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan, setTab, onConfirm }) {
+function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan, setTab, onConfirm, user }) {
+  const isAdmin = user?.role === 'Admin';
   const lines = (planLines || []).filter(l => l.spinnerMachine === batch.spinnerMachine && (!batch.pulledLineId || l.id === batch.pulledLineId));
   const [lineId, setLineId] = useState(batch.pulledLineId && (planLines || []).some(l => l.id === batch.pulledLineId && l.route) ? batch.pulledLineId : '');
   const [targetOD, setTargetOD] = useState(batch.targetOD ?? '');
@@ -5717,15 +5943,43 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
   const std = stds.find(x => x.id === standardId) || standardForSpec(stds, line?.spec) || (stds.length === 1 ? stds[0] : null);
   const locked = stds.length > 0;
   const noStd = stds.length === 0 && !!(MDs.standardRequired || {}).Spinner;
+
+  // Multi-pass schedule: when the standard defines passes, the operator logs each one;
+  // the LAST pass is mirrored into the final OD / thickness so the normal tolerance check still applies.
+  const hasPasses = Array.isArray(std?.passes) && std.passes.length > 0;
+  const toolCtx = useContext(ReportCtx);
+  const dies = (toolCtx?.toolingItems || []).filter(d => d.status !== 'Polishing');
+  const [dieId, setDieId] = useState('');
+  const [passLogs, setPassLogs] = useState({});
+  useEffect(() => {
+    const init = {};
+    if (Array.isArray(std?.passes)) std.passes.forEach((p, i) => { init[i] = { od: '', thk: '', rpm: '' }; });
+    setPassLogs(init);
+    setActualOD(''); setActualThickness('');
+  }, [std?.id]);
+  const handlePassChange = (index, field, val) => {
+    setPassLogs(prev => ({ ...prev, [index]: { ...(prev[index] || {}), [field]: val } }));
+    if (std?.passes && index === std.passes.length - 1) {
+      if (field === 'od') setActualOD(val);
+      if (field === 'thk') setActualThickness(val);
+    }
+  };
+
   const valid = line && line.route && actualOD !== '' && actualThickness !== '' && (!locked || !!std) && !noStd;
   const tOD = locked ? (std ? String(std.od) : '') : targetOD, tolOD = locked ? (std ? String(std.odTol) : '') : toleranceOD;
   const tThk = locked ? (std ? String(std.thk) : '') : targetThickness, tolThk = locked ? (std ? String(std.thkTol) : '') : toleranceThickness;
+  const gm = calcGramPerMeter(tOD !== '' ? tOD : actualOD, tThk !== '' ? tThk : actualThickness);
+  const dieMeters = gm > 0 && Number(batch.qty) > 0 ? Math.round(metersFromKg(batch.qty, gm)) : 0;
+  const pickedDie = dies.find(d => d.id === dieId) || null;
+  const dieOver = pickedDie && dieMeters > 0 && pickedDie.usageMeters + dieMeters > pickedDie.limitMeters;
   const submit = () => {
     if (!valid) return;
     const r = onConfirm(batch.id, {
+      dieId: pickedDie ? pickedDie.id : undefined, dieMeters: pickedDie ? dieMeters : undefined,
       planDate, planLineId: line.id, standardId: std ? std.id : undefined,
       targetOD: tOD !== '' ? Number(tOD) : null, toleranceOD: tolOD !== '' ? Number(tolOD) : null, actualOD: Number(actualOD),
       targetThickness: tThk !== '' ? Number(tThk) : null, toleranceThickness: tolThk !== '' ? Number(tolThk) : null, actualThickness: Number(actualThickness),
+      passLogs: hasPasses ? std.passes.map((p, i) => ({ passNo: p.passNo || i + 1, targetOD: p.od, targetThk: p.thk, targetRpm: p.rpm, actualOD: passLogs[i]?.od ?? '', actualThk: passLogs[i]?.thk ?? '', actualRpm: passLogs[i]?.rpm ?? '' })) : undefined,
     });
     if (r?.error) setErr(r.error);
   };
@@ -5733,7 +5987,7 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
 
   return (
     <div data-testid="route-gate" style={{ marginTop: 14, padding: 12, background: C.copperFaint, borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <p style={{ fontSize: 12.5, color: C.copperDark, fontWeight: 600 }}>Spinner {batch.spinnerMachine} — confirm {batch.pulledLineId ? 'the planned size this basket was requested for' : "today's planned size"}, measure the final pass, and send it on</p>
+      <p style={{ fontSize: 12.5, color: C.copperDark, fontWeight: 600 }}>Spinner {batch.spinnerMachine} — confirm {batch.pulledLineId ? 'the planned size this basket was requested for' : "today's planned size"}, {hasPasses ? 'follow the pass schedule' : 'measure the final pass'}, and send it on</p>
       {batch.spinnerRequestNo && <p data-testid="gate-request" style={{ fontSize: 12, color: C.subtext }}>Basket <span className="font-mono" style={{ fontWeight: 700 }}>{batch.basketNo || '—'}</span> requested from Cascade for {batch.spinnerMachine} — request <span className="font-mono" style={{ fontWeight: 700 }}>{batch.spinnerRequestNo}</span>.</p>}
       {lines.length === 0 ? (
         <div style={{ fontSize: 13, color: C.red, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -5747,13 +6001,89 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
           {locked && (
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.copperDark, fontWeight: 600, maxWidth: 420 }}>
               Standard <span style={{ fontWeight: 400, color: C.subtext, fontSize: 11.5 }}>(fixed by the Admin in Master — you only enter what you measured; chosen automatically when it matches the planned size)</span>
-              <select aria-label="Standard" value={std ? std.id : ''} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
-                <option value="">— choose the standard —</option>{stds.map(x => <option key={x.id} value={x.id}>{x.name}{x.spec ? ` · ${x.spec}` : ''}</option>)}
-              </select>
+              {isAdmin ? (
+                <select aria-label="Standard" value={std ? std.id : ''} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
+                  <option value="">— choose the standard —</option>{stds.map(x => <option key={x.id} value={x.id}>{x.name}{x.spec ? ` · ${x.spec}` : ''}</option>)}
+                </select>
+              ) : (
+                <div data-testid="standard-readonly" style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.borderSoft}`, fontSize: 14, background: C.panelAlt, color: C.ink, fontWeight: 700 }}>
+                  {std ? `${std.name}${std.spec ? ` · ${std.spec}` : ''}` : 'No matching standard found'}
+                </div>
+              )}
             </label>
           )}
-          <DimensionFields label="OD" target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={setToleranceOD} actual={actualOD} setActual={setActualOD} locked={locked} />
-          <DimensionFields label="THICKNESS" target={tThk} setTarget={setTargetThickness} tolerance={tolThk} setTolerance={setToleranceThickness} actual={actualThickness} setActual={setActualThickness} locked={locked} />
+          {hasPasses && (
+            <div data-testid="pass-schedule" style={{ padding: 14, background: C.panel, border: `1px solid ${C.copperSoft}`, borderRadius: 8 }}>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: C.copperDark, letterSpacing: 0.4, marginBottom: 8, textTransform: 'uppercase' }}>Required pass schedule</div>
+              {std.inputSize && <div style={{ fontSize: 12.5, color: C.ink, marginBottom: 12, fontWeight: 600 }}>Input size from Cascade: <Badge tone="default">{std.inputSize}</Badge></div>}
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, textAlign: 'left', minWidth: 520 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `2px solid ${C.borderSoft}` }}>
+                      {['Pass', 'Target size', 'Target RPM', 'Actual size (OD x Thk)', 'Actual RPM', 'Check'].map(h => <th key={h} style={{ padding: '6px 8px', color: C.subtext, fontWeight: 600 }}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {std.passes.map((p, i) => {
+                      const isFinal = i === std.passes.length - 1;
+                      const inp = { padding: '6px', borderRadius: 4, border: `1px solid ${C.border}` };
+                      return (
+                        <tr key={i} style={{ borderBottom: `1px solid ${C.borderSoft}`, background: isFinal ? C.copperFaint : 'transparent' }}>
+                          <td style={{ padding: 8, fontWeight: 600, color: C.ink }}>{p.passNo || i + 1} {isFinal && <span style={{ fontSize: 10, color: C.copperDark }}>(Final)</span>}</td>
+                          <td className="font-mono" style={{ padding: 8, fontWeight: 600 }}>{p.od} x {p.thk} mm</td>
+                          <td className="font-mono" style={{ padding: 8, color: C.blue, fontWeight: 600 }}>{p.rpm !== '' && p.rpm != null ? `${p.rpm} RPM` : '—'}</td>
+                          <td style={{ padding: 8 }}>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <input aria-label={`Pass ${i + 1} actual OD`} type="number" step="0.01" placeholder="OD" style={{ ...inp, width: 62 }} value={passLogs[i]?.od || ''} onChange={e => handlePassChange(i, 'od', e.target.value)} />
+                              x
+                              <input aria-label={`Pass ${i + 1} actual thickness`} type="number" step="0.01" placeholder="Thk" style={{ ...inp, width: 62 }} value={passLogs[i]?.thk || ''} onChange={e => handlePassChange(i, 'thk', e.target.value)} />
+                            </div>
+                          </td>
+                          <td style={{ padding: 8 }}>
+                            <input aria-label={`Pass ${i + 1} actual RPM`} type="number" placeholder="RPM" style={{ ...inp, width: 70 }} value={passLogs[i]?.rpm || ''} onChange={e => handlePassChange(i, 'rpm', e.target.value)} />
+                          </td>
+                          <td data-testid={`pass-check-${i + 1}`} style={{ padding: 8 }}>
+                            {(() => {
+                              const a = passLogs[i] || {}, flags = [];
+                              const odDev = a.od !== '' && a.od != null ? Number(a.od) - Number(p.od) : null, thDev = a.thk !== '' && a.thk != null ? Number(a.thk) - Number(p.thk) : null;
+                              if (odDev != null && Math.abs(odDev) > Number(std.odTol)) flags.push(`OD ${odDev > 0 ? '+' : ''}${odDev.toFixed(2)}`);
+                              if (thDev != null && Math.abs(thDev) > Number(std.thkTol)) flags.push(`Thk ${thDev > 0 ? '+' : ''}${thDev.toFixed(2)}`);
+                              if (p.rpm !== '' && p.rpm != null && a.rpm !== '' && a.rpm != null && Math.abs(Number(a.rpm) - Number(p.rpm)) > 0.1 * Number(p.rpm)) flags.push(`RPM ${Math.round(((Number(a.rpm) - Number(p.rpm)) / Number(p.rpm)) * 100)}%`);
+                              const entered = odDev != null || thDev != null || (a.rpm !== '' && a.rpm != null);
+                              if (!entered) return <span style={{ color: C.faint }}>—</span>;
+                              return flags.length ? <Badge tone="amber">{flags.join(' · ')}</Badge> : <Badge tone="green">OK</Badge>;
+                            })()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p style={{ fontSize: 11.5, color: C.subtext, margin: '8px 0 0' }}>The final pass is checked against the standard's target and tolerance. Each pass is flagged when its OD or thickness is outside that same tolerance, or its RPM is more than 10% from target. Flags are warnings; they do not block you.</p>
+            </div>
+          )}
+          {/* With a pass schedule the final pass above fills these in; the fields stay visible so the tolerance verdict shows */}
+          <DimensionFields label={hasPasses ? 'FINAL OD' : 'OD'} target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={setToleranceOD} actual={actualOD} setActual={hasPasses ? () => {} : setActualOD} locked={locked} />
+          <DimensionFields label={hasPasses ? 'FINAL THICKNESS' : 'THICKNESS'} target={tThk} setTarget={setTargetThickness} tolerance={tolThk} setTolerance={setToleranceThickness} actual={actualThickness} setActual={hasPasses ? () => {} : setActualThickness} locked={locked} />
+          {dies.length > 0 && (
+            <div data-testid="gate-die" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 520 }}>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>
+                Die / tool used (optional — adds this run's metres to its life)
+                <select aria-label="Die used" value={dieId} onChange={e => setDieId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
+                  <option value="">— not recording a die —</option>
+                  {dies.map(d => <option key={d.id} value={d.id}>{d.type || 'Die'} {d.id} · {d.size} · {Math.max(0, d.limitMeters - d.usageMeters).toLocaleString()} m left</option>)}
+                </select>
+              </label>
+              {pickedDie && dieMeters > 0 && <span style={{ fontSize: 12, color: dieOver ? C.red : C.subtext, fontWeight: dieOver ? 700 : 500 }}>This basket is about {dieMeters.toLocaleString()} m{dieOver ? ` — more than the ${Math.max(0, pickedDie.limitMeters - pickedDie.usageMeters).toLocaleString()} m this ${(pickedDie.type || 'die').toLowerCase()} has left. Consider polishing it first.` : ` of ${pickedDie.id}'s remaining ${Math.max(0, pickedDie.limitMeters - pickedDie.usageMeters).toLocaleString()} m.`}</span>}
+            </div>
+          )}
+          {gm > 0 && (
+            <div data-testid="gate-weight" style={{ padding: '10px 14px', background: C.panel, borderRadius: 8, fontSize: 12.5, color: C.ink, display: 'flex', gap: 20, flexWrap: 'wrap', border: `1px solid ${C.copperSoft}` }}>
+              <span><strong>Target weight:</strong> {gm.toFixed(1)} g/m</span>
+              {Number(batch.qty) > 0 && <span><strong>Theoretical length:</strong> {fmtMeters(metersFromKg(batch.qty, gm))} meters <span style={{ color: C.faint }}>(for {batch.qty} kg)</span></span>}
+            </div>
+          )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500, maxWidth: 520 }}>
             Planned size for this spinner
             <select aria-label="Planned size" value={lineId} onChange={e => { setLineId(e.target.value); setErr(''); }} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
@@ -6011,7 +6341,7 @@ function BatchCard({ batch, order, user, machines, spinnerPlans, planLines, plan
       </div>
 
       {awaitingRoute && !canActSpinner(user.role) && <p data-testid="gate-view-only" style={{ marginTop: 12, fontSize: 12.5, color: C.faint }}>View only — the Spinner Supervisor (or the Production Manager) confirms the planned size at the Spinner.</p>}
-      {awaitingRoute && canActSpinner(user.role) && <RouteGate batch={batch} planLines={gateLines} planDate={gateDate} planMeta={planMeta} orders={orders} canManagePlan={canEditPlan(user.role)} setTab={setTab} onConfirm={(id, data) => onSetRoute(id, data, user)} />}
+      {awaitingRoute && canActSpinner(user.role) && <RouteGate batch={batch} planLines={gateLines} planDate={gateDate} planMeta={planMeta} orders={orders} canManagePlan={canEditPlan(user.role)} setTab={setTab} onConfirm={(id, data) => onSetRoute(id, data, user)} user={user} />}
 
       {pull && <BatchFlowPanel batch={batch} deliveries={deliveries} user={user} setTab={setTab} onCloseOrder={onCloseOrder} onSaveCoils={onSaveCoils} />}
 
@@ -6030,7 +6360,7 @@ function BatchCard({ batch, order, user, machines, spinnerPlans, planLines, plan
           machineOptions={null}
           machineLabel="Spinner machine"
           canDoRework={canRework(user.role)} reinspect={rw === 'REINSPECT' ? lastCycle : null}
-          onLog={(data) => onLogPass(batch.id, stages[batch.currentStageIndex], data, user)} />
+          onLog={(data) => onLogPass(batch.id, stages[batch.currentStageIndex], data, user)} user={user} />
       )}
 
       {showScrapForm && <ScrapForm stageLabel={stages[batch.currentStageIndex]} onLog={(entry) => onLogScrap(batch.id, stages[batch.currentStageIndex], entry, user)} onClose={() => setShowScrapForm(false)} />}
@@ -6899,15 +7229,42 @@ function MasterSizes({ sizes, specsList, onSave, onSaveList }) {
   );
 }
 
+// Optional multi-pass drawing schedule inside a Master standard (Spinner). Each pass: target OD, thickness, speed.
+function PassScheduleBuilder({ inputSize, setInputSize, passes, onChange }) {
+  const list = passes || [];
+  const addPass = () => onChange([...list, { passNo: list.length + 1, od: '', thk: '', rpm: '' }]);
+  const updatePass = (i, field, val) => onChange(list.map((p, idx) => (idx === i ? { ...p, [field]: val } : p)));
+  const removePass = (i) => onChange(list.filter((_, idx) => idx !== i).map((p, n) => ({ ...p, passNo: n + 1 })));
+  return (
+    <div data-testid="pass-schedule-builder" style={{ padding: 14, background: C.panelAlt, border: `1px solid ${C.border}`, borderRadius: 8, marginTop: 14, marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 4 }}>MULTI-PASS DRAWING SCHEDULE (optional)</div>
+      <p style={{ fontSize: 12, color: C.subtext, margin: '0 0 12px' }}>List every pass in order. The last pass is the final size and is checked against the target and tolerance above.</p>
+      <div style={{ marginBottom: 12, maxWidth: 300 }}>
+        <TextField label="Input size from previous stage" placeholder="e.g. 31 x 1.5 MM" value={inputSize || ''} onChange={e => setInputSize(e.target.value)} />
+      </div>
+      {list.map((p, i) => (
+        <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 10, paddingBottom: 10, borderBottom: `1px dashed ${C.borderSoft}` }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.subtext, width: 60, paddingBottom: 10 }}>Pass {p.passNo}</div>
+          <TextField label="Target OD" type="number" step="0.01" value={p.od} onChange={e => updatePass(i, 'od', e.target.value)} />
+          <TextField label="Target Thk" type="number" step="0.01" value={p.thk} onChange={e => updatePass(i, 'thk', e.target.value)} />
+          <TextField label="Speed (RPM)" type="number" value={p.rpm} onChange={e => updatePass(i, 'rpm', e.target.value)} />
+          <Button variant="ghost" icon={Trash2} onClick={() => removePass(i)} style={{ color: C.red }} />
+        </div>
+      ))}
+      <Button variant="secondary" icon={Plus} onClick={addPass} style={{ marginTop: 6 }}>Add Machine Pass</Button>
+    </div>
+  );
+}
+
 function MasterStandardsCard({ stage, standards, required, onSave, onRequired }) {
-  const blank = { name: '', spec: '', od: '', odTol: '', thk: '', thkTol: '' };
+  const blank = { name: '', spec: '', od: '', odTol: '', thk: '', thkTol: '', inputSize: '', passes: [] };
   const [f, setF] = useState(blank), [editing, setEditing] = useState(null), [err, setErr] = useState(''), [msg, setMsg] = useState('');
   const mine = (standards || []).filter(x => x.stage === stage);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const commit = (r, what) => { if (r.error) { setErr(r.error); setMsg(''); return false; } const x = onSave('standards', r.standards, what); if (x?.error) { setErr(x.error); setMsg(''); return false; } setErr(''); return true; };
-  const label = (x) => `${x.name}: OD ${x.od} ± ${x.odTol}, thickness ${x.thk} ± ${x.thkTol} mm`;
+  const label = (x) => `${x.name}: OD ${x.od} ± ${x.odTol}, thickness ${x.thk} ± ${x.thkTol} mm${(x.passes || []).filter(p => p.od !== '' || p.thk !== '').length ? `, ${(x.passes || []).filter(p => p.od !== '' || p.thk !== '').length} passes` : ''}`;
   const save = () => {
-    if (editing) { const r = standardUpdate(standards, editing, { ...f, stage }); if (commit(r, { field: `${stage} · ${f.name}`, from: 'edited', to: label({ name: mdName(f.name), od: f.od, odTol: f.odTol, thk: f.thk, thkTol: f.thkTol }) })) { setEditing(null); setF(blank); setMsg('Standard updated. New passes use the new values; recorded ones keep theirs.'); } }
+    if (editing) { const r = standardUpdate(standards, editing, { ...f, stage }); if (commit(r, { field: `${stage} · ${f.name}`, from: 'edited', to: label({ name: mdName(f.name), od: f.od, odTol: f.odTol, thk: f.thk, thkTol: f.thkTol, passes: f.passes }) })) { setEditing(null); setF(blank); setMsg('Standard updated. New passes use the new values; recorded ones keep theirs.'); } }
     else { const r = standardAdd(standards, { ...f, stage }); if (commit(r, { field: `${stage} · ${mdName(f.name)}`, from: '', to: 'added' })) { setF(blank); setMsg('Standard added.'); } }
   };
   return (
@@ -6927,12 +7284,12 @@ function MasterStandardsCard({ stage, standards, required, onSave, onRequired })
             <tbody>
               {mine.map(x => (
                 <tr key={x.id} data-testid={`std-row-${x.name}`} style={{ borderTop: `1px solid ${C.borderSoft}`, opacity: x.active === false ? 0.6 : 1 }}>
-                  <td style={{ padding: '7px 10px', fontWeight: 600 }}>{x.name}{x.active === false && <> <Badge tone="default">Inactive</Badge></>}</td>
+                  <td style={{ padding: '7px 10px', fontWeight: 600 }}>{x.name}{x.passes?.length > 0 && <> <Badge tone="blue">{x.passes.length} passes</Badge></>}{x.active === false && <> <Badge tone="default">Inactive</Badge></>}</td>
                   <td className="font-mono" style={{ padding: '7px 10px', color: C.subtext }}>{x.spec || '—'}</td>
                   <td className="font-mono" style={{ padding: '7px 10px' }}>{x.od} ± {x.odTol}</td>
                   <td className="font-mono" style={{ padding: '7px 10px' }}>{x.thk} ± {x.thkTol}</td>
                   <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
-                    <button type="button" aria-label={`Edit ${x.name} at ${stage}`} onClick={() => { setEditing(x.id); setF({ name: x.name, spec: x.spec || '', od: String(x.od), odTol: String(x.odTol), thk: String(x.thk), thkTol: String(x.thkTol) }); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Edit</button>{' '}
+                    <button type="button" aria-label={`Edit ${x.name} at ${stage}`} onClick={() => { setEditing(x.id); setF({ name: x.name, spec: x.spec || '', od: String(x.od), odTol: String(x.odTol), thk: String(x.thk), thkTol: String(x.thkTol), inputSize: x.inputSize || '', passes: (x.passes || []).map(p => ({ ...p, od: String(p.od), thk: String(p.thk), rpm: p.rpm === '' || p.rpm == null ? '' : String(p.rpm) })) }); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Edit</button>{' '}
                     <button type="button" aria-label={`${x.active === false ? 'Reactivate' : 'Deactivate'} ${x.name} at ${stage}`} onClick={() => commit(standardSetActive(standards, x.id, x.active === false), { field: `${stage} · ${x.name}`, from: x.active === false ? 'inactive' : 'active', to: x.active === false ? 'active' : 'inactive' })} style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>{x.active === false ? 'Reactivate' : 'Deactivate'}</button>{' '}
                     <ConfirmIconButton title={`Remove ${x.name} at ${stage}`} onConfirm={() => commit(standardRemove(standards, x.id), { field: `${stage} · ${x.name}`, from: 'in Master', to: 'removed' })} />
                   </td>
@@ -6942,6 +7299,7 @@ function MasterStandardsCard({ stage, standards, required, onSave, onRequired })
           </table>
         </div>
       )}
+      {stage === 'Spinner' && <PassScheduleBuilder inputSize={f.inputSize} setInputSize={v => set('inputSize', v)} passes={f.passes} onChange={v => set('passes', v)} />}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         {[['name', 'Name', 150, 'text'], ['spec', 'Size text (optional)', 140, 'text'], ['od', 'OD target mm', 90], ['odTol', 'OD ± mm', 80], ['thk', 'Thickness target mm', 110], ['thkTol', 'Thickness ± mm', 100]].map(([k, l, w, t]) => (
           <label key={k} style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>{l}
@@ -7008,7 +7366,7 @@ function MasterTab({ user, settings, master, machines, orders, onSaveSettings, o
         <>
           <MasterSettingsCard testid="master-output" title="Output and capacity" sub="Targets the dashboard and Sales measure against." fields={pick(['Output', 'Annealing'])} settings={settings} onSave={onSaveSettings} />
           <MasterSettingsCard testid="master-cost" title="Cost" sub="Per kg of good output, so the numbers are easy to read." fields={pick(['Cost'])} settings={settings} onSave={onSaveSettings} />
-          <MasterSettingsCard testid="master-market" title="Market pricing" sub="Used by the dashboard's Sales, Market Intelligence and Mobile widgets." fields={pick(['Market'])} settings={settings} onSave={onSaveSettings} />
+          <MasterSettingsCard testid="master-market" title="Market pricing" sub="Used by the dashboard's Sales widget." fields={pick(['Market'])} settings={settings} onSave={onSaveSettings} />
           <MasterSettingsCard testid="master-alerts" title="Alerts" sub="When something is flagged on the dashboard." fields={pick(['Alerts'])} settings={settings} onSave={onSaveSettings} />
           <MasterCapacityCard capacities={master.capacities || {}} onSave={onSaveCapacities} />
           <MasterSettingsCard testid="master-plan" title="Production plan" sub="How the plan screens list things." fields={pick(['Plan'])} settings={settings} onSave={onSaveSettings} />
@@ -7342,7 +7700,7 @@ function MaintenanceTab({ maintenanceLogs, onAdd, onResolve, onSetInProgress, on
 
   return (
     <div>
-      <SectionTitle sub="Report breakdowns as they happen, and schedule the upkeep that prevents the next one.">Maintenance</SectionTitle>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}><SectionTitle sub="Report breakdowns as they happen, and schedule the upkeep that prevents the next one.">Maintenance</SectionTitle><ReportButton id="maintenance" /></div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
         <button onClick={() => setSubTab('breakdowns')} style={{
           padding: '6px 14px', borderRadius: 999, fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
@@ -7472,7 +7830,7 @@ function CapaTab({ capaRecords, onAdd, onUpdateStatus, onDelete, user }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <SectionTitle sub="Corrective & Preventive Action — from root cause to a verified fix, not just 'noted'.">CAPA Tracking</SectionTitle>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}><SectionTitle sub="Corrective & Preventive Action — from root cause to a verified fix, not just 'noted'.">CAPA Tracking</SectionTitle><ReportButton id="capa" /></div>
         <Button icon={Plus} onClick={() => setShowForm(v => !v)}>{showForm ? 'Close' : 'Log CAPA'}</Button>
       </div>
 
@@ -8690,7 +9048,7 @@ function SpcTab({ batches }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <SectionTitle sub="Statistical process control — is each stage actually in control, or drifting toward out-of-spec before it produces a bad tube?">SPC — Process Capability</SectionTitle>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}><SectionTitle sub="Statistical process control — is each stage actually in control, or drifting toward out-of-spec before it produces a bad tube?">SPC — Process Capability</SectionTitle><ReportButton id="quality" label="Measurements Excel" /></div>
         <div style={{ display: 'flex', gap: 8 }}>
           {['OD', 'Thickness'].map(d => (
             <button key={d} onClick={() => setDimension(d)} style={{
@@ -10484,7 +10842,7 @@ function coilEditable(b) {
 }
 function canRecordCoils(role) { return canDo(role, 'coils.record'); }
 
-function CoilFields({ rec, setRec, errors, basketKg, route }) {
+function CoilFields({ rec, setRec, errors, basketKg, route, gm = 0 }) {
   const set = (k, v) => setRec(p => ({ ...p, [k]: v }));
   const f = (key, label, width = 92, step = '1') => (
     <label style={{ fontSize: 11.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 3 }}>{label}
@@ -10504,6 +10862,13 @@ function CoilFields({ rec, setRec, errors, basketKg, route }) {
           </select>
         </label>
       </div>
+      {gm > 0 && (Number(rec.acceptedKg) > 0 || Number(rec.rejectedKg) > 0) && (
+        <div data-testid="coil-lengths" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, marginTop: 8, color: C.subtext }}>
+          <span><strong>Target:</strong> {gm.toFixed(1)} g/m</span>
+          <span style={{ color: C.green }}><strong>Accepted length:</strong> {fmtMeters(metersFromKg(rec.acceptedKg, gm))} m</span>
+          <span style={{ color: C.red }}><strong>Rejected length:</strong> {fmtMeters(metersFromKg(rec.rejectedKg, gm))} m</span>
+        </div>
+      )}
       {errors && Object.keys(errors).length > 0 && (
         <div role="alert" data-testid="coil-errors" style={{ color: C.red, fontSize: 12, marginTop: 6 }}>{Object.values(errors).map((m, i) => <div key={i}>• {m}</div>)}</div>
       )}
@@ -10533,7 +10898,7 @@ function RunFinishRow({ b, can, onFinish, canHold, onHold }) {
               <input aria-label={`Finish time for ${b.productionOrderNo}`} title="Leave blank to use the current time" type="datetime-local" value={at} onChange={e => setAt(e.target.value)} style={miniInput} /><span style={{ fontSize: 11, color: C.faint }}>blank = now</span>
               <Button onClick={() => { const r = onFinish(b.id, { endedAt: at, coils: needsCoils ? rec : null }); setErr(r?.error && !r.errors ? r.error : ''); setErrors(r?.errors || null); }}>{routeHasAnnealing(b) ? 'Finish & inform Annealing' : 'Finish & inform Packing'}</Button>
             </div>
-            {needsCoils && <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={basketKg} route={b.route} />}
+            {needsCoils && <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={basketKg} route={b.route} gm={calcGramPerMeter(b.targetOD, b.targetThickness)} />}
             <ErrNote err={err} />
           </div>
         ) : <span style={{ color: C.faint, fontSize: 12 }}>Running</span>}
@@ -10567,11 +10932,15 @@ function CoilPanel({ batch, user, onSave }) {
           {cell('ACCEPTED WEIGHT', fmtQty(c.acceptedKg, 'kg'), C.green)}{cell('REJECTED WEIGHT', fmtQty(c.rejectedKg, 'kg'), c.rejectedKg ? C.red : C.ink)}
           {c.lossKg > 0 && cell('PROCESS LOSS', fmtQty(c.lossKg, 'kg'), C.amber)}
           {cell('REJECTION RATE', `${fmtPct(rate(c.rejected, c.made))} coils · ${fmtPct(rate(c.rejectedKg, c.acceptedKg + c.rejectedKg))} weight`)}
+          {calcGramPerMeter(batch.targetOD, batch.targetThickness) > 0 && <>
+            {cell('ACCEPTED LENGTH', `${fmtMeters(metersFromKg(c.acceptedKg, calcGramPerMeter(batch.targetOD, batch.targetThickness)))} m`, C.green)}
+            {cell('REJECTED LENGTH', `${fmtMeters(metersFromKg(c.rejectedKg, calcGramPerMeter(batch.targetOD, batch.targetThickness)))} m`, c.rejectedKg ? C.red : C.ink)}
+          </>}
           {c.rejectReason && <div style={{ fontSize: 12, color: C.subtext, alignSelf: 'flex-end' }}>Reason: {c.rejectReason}</div>}
         </div>
       ) : (
         <div>
-          <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={c.inputKg} route={batch.route} />
+          <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={c.inputKg} route={batch.route} gm={calcGramPerMeter(batch.targetOD, batch.targetThickness)} />
           <ErrNote err={err} />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <Button onClick={() => { const r = onSave(batch.id, rec); if (r?.error) { setErr(r.errors ? '' : r.error); setErrors(r.errors || null); } else setEditing(false); }}>Save coil record</Button>
@@ -11531,7 +11900,7 @@ function ShopFloorTab({ batches, charges, requests, spinnerPlans, machines, user
   ];
   return (
     <div>
-      <SectionTitle sub="Pull system: each department takes what it needs from the one before it. Nothing is pushed forward.">Shop floor</SectionTitle>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}><SectionTitle sub="Pull system: each department takes what it needs from the one before it. Nothing is pushed forward.">Shop floor</SectionTitle><ReportButton ids={['annealing', 'coils', 'production']} /></div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
         {items.map(it => (
           <button key={it.key} onClick={() => setSection(it.key)} data-testid={`floor-tab-${it.key}`} style={{
@@ -12159,6 +12528,8 @@ const NAV_GROUPS = [
     items: [
       { key: 'cost', label: 'Cost of Production', icon: Scale },
       { key: 'trends', label: 'Trends', icon: TrendingUp },
+      { key: 'reports', label: 'Reports & Downloads', icon: FileSpreadsheet, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Production', 'PPC Manager', 'Quality', 'Store', 'RM & Supply Chain Manager', 'Sales', 'Dispatch'] },
+      { key: 'audit', label: 'Audit Trail', icon: History, roles: ['Admin', 'Owner'] },
       { key: 'team', label: 'Team & Roles', icon: Users },
     ],
   },
@@ -12343,6 +12714,8 @@ function sizesImport(sizes, text, newId = uid) {
   });
   return { sizes: cur, added, errors };
 }
+function sizeSetActive(sizes, id, active) { return { sizes: (sizes || []).map(x => x.id === id ? { ...x, active: !!active } : x) }; }
+function sizeRemove(sizes, id) { return { sizes: (sizes || []).filter(x => x.id !== id) }; }
 function sizesFor(sizes, productType) { return (sizes || []).filter(x => x.active !== false && (!productType || x.productType === productType)).sort((a, b) => a.od - b.od || a.thk - b.thk); }
 function sizeToForm(sz) { return { productType: sz.productType, sizeText: String(Math.round(sz.od * 1000) / 1000), sizeUnit: 'mm', thkText: sz.thk ? String(Math.round(sz.thk * 1000) / 1000) : '', thkUnit: 'mm', specification: sz.spec || '' }; }
 // the Master size the form's current numbers equal (so the drop-down can show it); null = a manual size
@@ -12375,7 +12748,24 @@ function standardCheck(list, input, exceptId = null) {
   if (thkTol >= thk) return { error: 'The thickness tolerance must be smaller than the thickness.' };
   const spec0 = mdName(input.spec);
   if (spec0.length > 60) return { error: 'Use at most 60 characters for the size text.' };
-  return { clean: { stage, name, spec: spec0 ? normalizeSpec(spec0) : '', od, odTol, thk, thkTol } };
+  const clean = { stage, name, spec: spec0 ? normalizeSpec(spec0) : '', od, odTol, thk, thkTol };
+  // optional multi-pass drawing schedule (used at the Spinner): every pass needs an OD and a thickness, RPM is optional
+  const rawPasses = Array.isArray(input.passes) ? input.passes.filter(p => !(String(p.od ?? '').trim() === '' && String(p.thk ?? '').trim() === '' && String(p.rpm ?? '').trim() === '')) : [];
+  if (rawPasses.length) {
+    const passes = [];
+    for (let i = 0; i < rawPasses.length; i++) {
+      const pOd = standardNum(rawPasses[i].od), pThk = standardNum(rawPasses[i].thk), rpmTxt = String(rawPasses[i].rpm ?? '').trim(), pRpm = rpmTxt === '' ? '' : standardNum(rpmTxt);
+      if (!(pOd > 0) || !(pThk > 0)) return { error: `Pass ${i + 1}: enter the target OD and thickness in mm (more than 0).` };
+      if (pThk >= pOd) return { error: `Pass ${i + 1}: the thickness must be smaller than the OD.` };
+      if (pRpm !== '' && !(pRpm > 0)) return { error: `Pass ${i + 1}: the speed (RPM) must be more than 0, or left blank.` };
+      passes.push({ passNo: i + 1, od: pOd, thk: pThk, rpm: pRpm });
+    }
+    clean.passes = passes;
+    const inTxt = mdName(input.inputSize);
+    if (inTxt.length > 60) return { error: 'Use at most 60 characters for the input size.' };
+    if (inTxt) clean.inputSize = inTxt;
+  }
+  return { clean };
 }
 function standardAdd(list, input, newId = uid) {
   const r = standardCheck(list, input); if (r.error) return r;
@@ -12385,7 +12775,8 @@ function standardAdd(list, input, newId = uid) {
 function standardUpdate(list, id, input) {
   const cur = (list || []).find(x => x.id === id); if (!cur) return { error: 'That standard is not in Master.' };
   const r = standardCheck(list, { ...input, stage: cur.stage }, id); if (r.error) return r;
-  return { standards: list.map(x => x.id === id ? { ...x, ...r.clean } : x) };
+  // a schedule removed in the editor must really go: drop the old one before merging
+  return { standards: list.map(x => { if (x.id !== id) return x; const { passes, inputSize, ...rest } = x; return { ...rest, ...r.clean }; }) };
 }
 function standardSetActive(list, id, active) { return { standards: (list || []).map(x => x.id === id ? { ...x, active: !!active } : x) }; }
 function standardRemove(list, id) { return { standards: (list || []).filter(x => x.id !== id) }; }
@@ -12863,8 +13254,8 @@ export default function App() {
   const [skillMatrix, setSkillMatrix] = useState({});
   const [kaizenIdeas, setKaizenIdeas] = useState([]);
   const [toolingItems, setToolingItems] = useState(DEFAULT_DIES);
+  const toolingRef = useRef(DEFAULT_DIES); toolingRef.current = toolingItems;   // latest tooling list for handlers that must not wait for a re-render
   const [energyLogs, setEnergyLogs] = useState([]);
-  const [crmDeals, setCrmDeals] = useState([]);
   const [pmTasks, setPmTasks] = useState([]);
   const [bom, setBom] = useState([]);
   const [matDocs, setMatDocs] = useState([]);
@@ -12994,11 +13385,10 @@ export default function App() {
     if (!user) return;
     let cancelled = false;
     (async () => {
-      const [td, el, cd] = await Promise.all([loadShared(KEYS.tooling, DEFAULT_DIES), loadShared(KEYS.machineEnergy, []), loadShared(KEYS.crmDeals, [])]);
+      const [td, el] = await Promise.all([loadShared(KEYS.tooling, DEFAULT_DIES), loadShared(KEYS.machineEnergy, [])]);
       if (cancelled) return;
       if (!shouldSkipLoad(KEYS.tooling)) setToolingItems(Array.isArray(td) ? td : DEFAULT_DIES);
       if (!shouldSkipLoad(KEYS.machineEnergy)) setEnergyLogs(Array.isArray(el) ? el : []);
-      if (!shouldSkipLoad(KEYS.crmDeals)) setCrmDeals(Array.isArray(cd) ? cd : []);
     })();
     return () => { cancelled = true; };
   }, [user]);
@@ -13224,7 +13614,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     if (prev.some(d => d.id === die.id)) return prev;   // die IDs are unique
     const next = [...prev, die];
     saveShared(KEYS.tooling, next);
-    logAudit({ actor: user.name, action: 'create', entityType: 'die', entityId: die.id, details: { size: die.size, limitMeters: die.limitMeters } });
+    logAudit({ actor: user.name, action: 'create', entityType: 'die', entityId: die.id, details: { type: die.type || 'Die', size: die.size, limitMeters: die.limitMeters } });
     return next;
   });
   const updateDieUsage = (id, meters) => setToolingItems(prev => {
@@ -13238,14 +13628,14 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     logAudit({ actor: user.name, action: 'status_change', entityType: 'die', entityId: id, details: { newStatus: 'Polished / reset' } });
     return next;
   });
-  // ---- Sales pipeline (CRM) ----
-  const addDeal = (d) => { if (!canEditOrders(user.role)) return; setCrmDeals(prev => {
-    const deal = { id: uid(), ...d, createdBy: user.name, createdAt: new Date().toISOString() };
-    const next = [deal, ...prev]; saveShared(KEYS.crmDeals, next);
-    logAudit({ actor: user.name, action: 'create', entityType: 'crm_deal', entityId: deal.id, details: { client: deal.client, tonnage: deal.tonnage } });
-    return next; }); };
-  const updateDeal = (id, patch) => { if (!canEditOrders(user.role)) return; setCrmDeals(prev => { const next = prev.map(d => d.id === id ? { ...d, ...patch } : d); saveShared(KEYS.crmDeals, next); return next; }); };
-  const deleteDeal = (id) => { if (!canEditOrders(user.role)) return; setCrmDeals(prev => { const next = prev.filter(d => d.id !== id); saveShared(KEYS.crmDeals, next); return next; }); };
+  const deleteDie = (id) => setToolingItems(prev => {
+    const cur = prev.find(d => d.id === id);
+    if (cur && cur.usageMeters > 0 && user.role !== 'Admin') return prev;   // history is kept unless the Admin deletes it
+    const next = prev.filter(d => d.id !== id);
+    saveShared(KEYS.tooling, next);
+    logAudit({ actor: user.name, action: 'delete', entityType: 'die', entityId: id });
+    return next;
+  });
   // ---- Machine-wise energy: accepts one reading or an array; one reading per machine per date (latest wins) ----
   const logMachineEnergy = (logs) => setEnergyLogs(prev => {
     const incoming = (Array.isArray(logs) ? logs : [logs]).map(l => ({ ...l, loggedBy: user.name, loggedAt: new Date().toISOString() }));
@@ -13431,7 +13821,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     if (!canActSpinner(user.role)) return { error: 'Only the Spinner Supervisor, the Production Manager or a Manager can confirm the planned size at the Spinner.' };
     const rs = resolveStandard(masterRefData.current, 'Spinner', args);
     if (rs.error) return { error: rs.error };
-    const { planDate, planLineId, targetOD, toleranceOD, actualOD, targetThickness, toleranceThickness, actualThickness } = rs.data;
+    const { planDate, planLineId, targetOD, toleranceOD, actualOD, targetThickness, toleranceThickness, actualThickness, passLogs, dieId, dieMeters } = rs.data;
     const line = (spinnerPlansRef.current[planDate] || []).find(l => l.id === planLineId);
     if (!line || !line.route) return { error: 'That plan line is missing or has no route. Ask the Manager to complete it in the Production Plan.' };
     const target = batchesRef.current.find(b => b.id === id);
@@ -13440,6 +13830,8 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       if (b.id !== id) return b;
       const measurement = buildMeasurement('Spinner', { targetOD, toleranceOD, actualOD, targetThickness, toleranceThickness, actualThickness }, user);
       if (rs.standard) { measurement.standardId = rs.standard.id; measurement.standardName = rs.standard.name; }
+      if (dieId && Number(dieMeters) > 0) { measurement.dieId = dieId; measurement.dieMeters = Math.round(Number(dieMeters)); }
+      if (Array.isArray(passLogs) && passLogs.length) measurement.passLogs = passLogs;   // pass-by-pass record from the Spinner schedule
       const updated = {
         ...b, spec: line.spec, route: line.route, routeMachine: line.routeMachine || null,
         annealing: line.annealing !== false, orderId: line.orderId || b.orderId || null,
@@ -13454,6 +13846,11 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       return { ...updated, currentStageIndex: newIndex, history: [...updated.history, entry] };
     });
     commitBatches(next);
+    // the die that drew this basket wears by the metres in it
+    if (dieId && Number(dieMeters) > 0 && toolingRef.current.some(d => d.id === dieId)) {
+      updateDieUsage(dieId, Math.round(Number(dieMeters)));
+      logAudit({ actor: user.name, action: 'update', entityType: 'die', entityId: dieId, details: { addedMeters: Math.round(Number(dieMeters)), batchId: id } });
+    }
     // Now that the plan has told us which order this batch fulfils, move it
     // off "New" (never backwards) -- this also pushes the public tracking link.
     if (line.orderId) {
@@ -14718,6 +15115,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       ) : (
         <BatchIndexCtx.Provider value={batchIndex}>
         <MasterDataCtx.Provider value={{ customers: master.customers || [], sizes: master.sizes || [], standards: master.standards || [], standardRequired: master.standardRequired || {}, potCapacityKg: settingValue(settings, 'potCapacityKg'), capacities: master.capacities || {}, shiftDayStart: settingValue(settings, 'shiftDayStart'), shiftNightStart: settingValue(settings, 'shiftNightStart'), orderListClosestFirst: settingValue(settings, 'orderListClosestFirst'), seeCustomer: canDo(user.role, 'customer.see'), specs: (master.lists || {}).specifications?.items || [], canAdd: canDo(user.role, 'master.add'), save: addMasterFromForm }}>
+        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries }}>
         <Shell tab={tab} setTab={setTab} user={user} onLogout={handleLogout} lastSync={lastSync} onRefresh={loadAll}
           notifications={notifications} onMarkNotificationsRead={markNotificationsRead} isOnline={isOnline} pendingSyncCount={pendingSyncCount}
           orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance}>
@@ -14725,7 +15123,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           {tab === 'launchpad' && <HomePage setTab={setTab} orders={orders} dailyPlans={dailyPlans} batches={batches} rawItems={rawItems}
             maintenanceLogs={maintenanceLogs} capaRecords={capaRecords} pmTasks={pmTasks} costData={costData} machineProd={machineProd}
             dprEntries={dprEntries} rawConsumption={rawConsumption} user={user} toolingItems={toolingItems} energyLogs={energyLogs}
-            capacities={master.capacities || {}} crmDeals={crmDeals} onAddDeal={addDeal} onUpdateDeal={updateDeal} onDeleteDeal={deleteDeal}
+            capacities={master.capacities || {}} 
             planMeta={planMeta} spinnerPlans={spinnerPlans} dispatchPlans={dispatchPlans} deliveries={deliveries} heats={heats} settings={settings} onClearAll={clearAllData} />}
           {tab === 'qmlots' && <QMLotsTab batches={batches} />}
           {tab === 'matdocs' && <MaterialDocsTab matDocs={matDocs} rawItems={rawItems} finishedItems={finishedItems} />}
@@ -14755,7 +15153,9 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           {tab === 'inventory' && <><InventoryTab batches={batches} rawItems={rawItems} finishedItems={finishedItems} onAddRaw={addRaw} onAdjustRaw={adjustRaw} onDeleteRaw={deleteRaw} onAddFinished={addFinished} onAddFinishedBatch={addFinishedBatch} onAdjustFinished={adjustFinished} onDeleteFinished={deleteFinished} onSetFinishedCategory={setFinishedCategory} onSetRawKind={setRawKind} rawConsumption={rawConsumption} user={user} /><RawMaterialRequestsPanel orders={orders} rawItems={rawItems} user={user} /></>}
           {tab === 'bomMrp' && <BomMrpTab bom={bom} onAddBom={addBom} onDeleteBom={deleteBom} orders={orders} rawItems={rawItems} batches={batches} settings={settings} user={user} />}
           {tab === 'skills' && <SkillMatrixTab skillMatrix={skillMatrix} onUpdateLevel={updateSkillLevel} onRemovePerson={removeSkillPerson} user={user} />}
-          {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} user={user} />}
+          {tab === 'reports' && canSeeTab(user, 'reports') && <ReportsTab user={user} />}
+          {tab === 'audit' && canSeeTab(user, 'audit') && <AuditTab user={user} />}
+          {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} onDeleteDie={deleteDie} user={user} />}
           {tab === 'energy' && <EnergyTrackingTab energyLogs={energyLogs} onLogMachineEnergy={logMachineEnergy} />}
           {tab === 'kaizen' && <KaizenTab kaizenIdeas={kaizenIdeas} onAdd={addKaizen} onUpdateStatus={updateKaizenStatus} onDelete={deleteKaizen} user={user} />}
           {tab === 'dpr' && <DprTab dprEntries={dprEntries} onUpdateDpr={updateDprEntry}
@@ -14774,6 +15174,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
             onSaveAccess={saveMasterAccess} onResetAccess={resetMasterAccess} onCopyAccess={copyMasterAccess} onSaveData={saveMasterData} onSaveRequired={saveStandardRequired} onSaveCapacities={saveMasterCapacities} orders={orders} />}
           {tab === 'team' && <TeamRolesTab userRoles={userRoles} onUpdate={updateUserRoles} shiftNames={shiftNames} onUpdateShiftNames={updateShiftNames} user={user} customerLinks={master.customerLinks || {}} onSaveCustomerLink={saveCustomerLink} />}
         </Shell>
+        </ReportCtx.Provider>
         </MasterDataCtx.Provider>
         </BatchIndexCtx.Provider>
       )}
