@@ -2118,28 +2118,29 @@ function TraceabilityTree({ batch, batches, heats }) {
 }
 
 
-function OEEDashboard({ downtimeLogs, planRows, shiftHours = 8 }) {
+function OEEDashboard({ downtimeLogs, planRows, shiftHours = 8, summary }) {
+  // Legacy fallback: no run time in today's Daily Report, so availability comes from logged downtime vs one shift.
   const plannedMinutes = shiftHours * 60;
   const downtimeMinutes = (downtimeLogs || []).reduce((acc, log) => acc + (Number(log.minutes) || 0), 0);
-  const availability = Math.max(0, (plannedMinutes - downtimeMinutes) / plannedMinutes);
-  
+  const legacyAvail = Math.max(0, (plannedMinutes - downtimeMinutes) / plannedMinutes) * 100;
+  const avail = summary?.hasRunTime ? summary.availability : legacyAvail;
+  const perf = summary?.performance ?? null, qual = summary?.quality ?? null, oee = summary?.oee ?? null;
+  const tile = (label, v, color, testid) => (
+    <div style={{ padding: '12px 14px', background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
+      <div style={{ fontSize: 10.5, color: C.subtext, fontWeight: 700, letterSpacing: 0.4 }}>{label}</div>
+      <div data-testid={testid} className="font-mono" style={{ fontSize: 22, fontWeight: 700, color: v == null ? C.faint : color, marginTop: 4 }}>{v == null ? '—' : `${v.toFixed(1)}%`}</div>
+    </div>
+  );
   return (
     <Card>
-      <SectionTitle sub="Based on logged downtime today.">OEE Dashboard</SectionTitle>
+      <SectionTitle sub={summary?.hasRunTime ? "Today, from the Daily Report: OEE = Availability × Performance × Quality." : "Fill Run (h), Downtime (h), Plan, Actual, Input and Good output in today's Daily Report to see full OEE."}>OEE Dashboard</SectionTitle>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: 10 }}>
-        <div style={{ padding: '12px 14px', background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
-          <div style={{ fontSize: 10.5, color: C.subtext, fontWeight: 700, letterSpacing: 0.4 }}>AVAILABILITY</div>
-          <div className="font-mono" style={{ fontSize: 22, fontWeight: 700, color: availability > 0.9 ? C.green : C.amber, marginTop: 4 }}>{(availability * 100).toFixed(1)}%</div>
-        </div>
-        <div style={{ padding: '12px 14px', background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
-          <div style={{ fontSize: 10.5, color: C.subtext, fontWeight: 700, letterSpacing: 0.4 }}>PERFORMANCE</div>
-          <div className="font-mono" style={{ fontSize: 22, fontWeight: 700, color: C.faint, marginTop: 4 }}>—</div>
-        </div>
-        <div style={{ padding: '12px 14px', background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
-          <div style={{ fontSize: 10.5, color: C.subtext, fontWeight: 700, letterSpacing: 0.4 }}>QUALITY</div>
-          <div className="font-mono" style={{ fontSize: 22, fontWeight: 700, color: C.faint, marginTop: 4 }}>—</div>
-        </div>
+        {tile('AVAILABILITY', avail, avail > 90 ? C.green : C.amber, 'oee-avail')}
+        {tile('PERFORMANCE', perf, perf >= 90 ? C.green : C.amber, 'oee-perf')}
+        {tile('QUALITY', qual, qual >= 95 ? C.green : C.amber, 'oee-qual')}
+        {tile('OEE', oee, oee >= 85 ? C.green : oee >= 65 ? C.amber : C.red, 'oee-total')}
       </div>
+      {summary?.lowest && <p style={{ fontSize: 12, color: C.subtext, marginTop: 10 }}>Lowest today: <strong>{summary.lowest.machineId}</strong> at {summary.lowest.oee.toFixed(1)}%.</p>}
     </Card>
   );
 }
@@ -3515,28 +3516,68 @@ const REPORTS = [
         'Dies near limit': dies.map(d => ({ Type: d.type || 'Die', ID: d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit': d.limitMeters, 'Used %': Math.round((d.usageMeters / d.limitMeters) * 100) })),
       };
     } },
-  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'One sheet: every pot charge with its contents on the same rows (pot no., production order, basket, size, kg), times in/out and heating / soaking / cooling minutes.',
+  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'Charges sheet (one row per charge / pot with times and total pot kg), Specs sheet (what was in each pot), plus Summary, By pot and By spec.',
     build: (c, rg) => {
       const ch = (c.charges || []).filter(x => inRangeIso(x.chargedAt, rg));
-      const rows = [];
-      ch.forEach(x => {
-        const cycle = x.potInAt && x.potOutAt ? minutesBetween(x.potInAt, x.potOutAt) : '';
-        const base = { 'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy, 'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '', 'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin), 'Total cycle (min)': cycle, 'Forwarded to packing': x.forwardedAt || '' };
-        const items = x.items && x.items.length ? x.items : [null];
-        items.forEach((i, n) => rows.push({
-          ...base,
-          'Production order': i?.productionOrderNo || '', 'Batch code': i?.batchCode || '', Basket: i?.basketNo || '', Spec: i?.spec || '', Qty: i?.qty ?? '', Unit: i?.unit || '', Route: i?.route || '', Machine: i?.routeMachine || '',
-          'Pot total kg': n === 0 ? potKg(x.items) : '',   // shown once per pot so a column sum is not doubled
-          Notes: n === 0 ? (x.notes || '') : '',
-        }));
+      const num = (v) => (v == null || v === '' || isNaN(Number(v)) ? null : Number(v));
+      const avg = (arr) => { const v = arr.filter(n => n != null); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : ''; };
+      const cycleOf = (x) => (x.potInAt && x.potOutAt ? minutesBetween(x.potInAt, x.potOutAt) : null);
+      const avgCycle = avg(ch.map(cycleOf));
+      // Charges: one row per charge, nothing repeated. Charge no + Pot link it to the Specs sheet.
+      const charges = ch.map(x => {
+        const cycle = cycleOf(x);
+        return {
+          'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy,
+          'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '',
+          'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin),
+          'Total cycle (min)': cycle ?? '',
+          'Cycle flag': cycle != null && avgCycle !== '' && cycle > avgCycle * 1.2 ? 'LONG' : '',   // >20% above the average cycle
+          'Specs in pot': (x.items || []).length, 'Total pot weight (kg)': potKg(x.items),
+          'Forwarded to packing': x.forwardedAt || '', Notes: x.notes || '',
+        };
       });
-      return { 'Annealing': rows };
+      // Specs: one row per item in a pot
+      const specs = ch.flatMap(x => (x.items && x.items.length ? x.items : []).map(i => ({
+        'Charge no': x.chargeNo, Pot: x.potNo, 'Production order': i.productionOrderNo || '', 'Batch code': i.batchCode || '', Basket: i.basketNo || '',
+        Spec: i.spec || '', Qty: i.qty ?? '', Unit: i.unit || '', Route: i.route || '', Machine: i.routeMachine || '',
+      })));
+      // By pot
+      const pots = {};
+      ch.forEach(x => {
+        const p = (pots[x.potNo] ||= { Pot: x.potNo, Charges: 0, 'Total kg': 0, h: [], s: [], co: [], cy: [] });
+        p.Charges += 1; p['Total kg'] += potKg(x.items);
+        p.h.push(num(x.heatingMin)); p.s.push(num(x.soakingMin)); p.co.push(num(x.coolingMin)); p.cy.push(cycleOf(x));
+      });
+      const byPot = Object.values(pots).sort((a, b) => String(a.Pot).localeCompare(String(b.Pot), undefined, { numeric: true }))
+        .map(p => ({ Pot: p.Pot, Charges: p.Charges, 'Total kg': p['Total kg'], 'Avg heating (min)': avg(p.h), 'Avg soaking (min)': avg(p.s), 'Avg cooling (min)': avg(p.co), 'Avg cycle (min)': avg(p.cy) }));
+      // By spec
+      const sp = {};
+      ch.forEach(x => (x.items || []).forEach(i => {
+        const k = `${i.spec || '—'}|${i.unit || ''}`;
+        const r = (sp[k] ||= { Spec: i.spec || '—', Unit: i.unit || '', Items: 0, 'Total qty': 0 });
+        r.Items += 1; r['Total qty'] += Number(i.qty) || 0;
+      }));
+      const bySpec = Object.values(sp).sort((a, b) => String(a.Spec).localeCompare(String(b.Spec)));
+      // Summary
+      const byDay = {};
+      ch.forEach(x => { const d = isoToLocalKey(x.chargedAt); byDay[d] = (byDay[d] || 0) + potKg(x.items); });
+      const summary = [
+        { KPI: 'Charges', Value: ch.length },
+        { KPI: 'Total weight charged (kg)', Value: charges.reduce((t, r) => t + r['Total pot weight (kg)'], 0) },
+        { KPI: 'Avg heating (min)', Value: avg(ch.map(x => num(x.heatingMin))) },
+        { KPI: 'Avg soaking (min)', Value: avg(ch.map(x => num(x.soakingMin))) },
+        { KPI: 'Avg cooling (min)', Value: avg(ch.map(x => num(x.coolingMin))) },
+        { KPI: 'Avg total cycle (min)', Value: avgCycle },
+        { KPI: 'Charges flagged LONG (>20% above avg cycle)', Value: charges.filter(r => r['Cycle flag']).length },
+        ...Object.keys(byDay).sort().map(d => ({ KPI: `Kg charged on ${d}`, Value: byDay[d] })),
+      ];
+      return { 'Charges': charges, 'Specs': specs, 'Summary': summary, 'By pot': byPot, 'By spec': bySpec };
     } },
-  { id: 'production', group: 'Production', title: 'Production orders & stages', desc: 'All production orders with route, size, stage, quantities, plus the scrap log.',
+  { id: 'production', group: 'Production', title: 'Production orders & stages', desc: 'All production orders with route, size, stage, quantities, final (packed) weight and yield %, plus the scrap log.',
     build: (c, rg) => {
       const bs = (c.batches || []).filter(b => inRangeIso(b.startedAt, rg));
       return {
-        'Production orders': bs.map(b => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Heat: (c.heats || []).find(h => h.id === b.heatId)?.furnace || b.furnace || '', 'Shell no.': b.shellNo ?? '', Spec: b.spec || '', Qty: b.qty, Unit: b.unit, Status: b.status, 'Flow state': isPullBatch(b) ? (FLOW_STATE_INFO[batchFlowState(b)]?.label || '') : '', Route: b.route || '', Machine: b.routeMachine || '', Spinner: b.spinnerMachine || '', Basket: b.basketNo || '', 'Current stage': batchStages(b)[b.currentStageIndex] || '', Started: b.startedAt, 'Scrap kg': (b.scrapLog || []).reduce((s, r) => s + Number(r.qty || 0), 0) })),
+        'Production orders': bs.map(b => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Heat: (c.heats || []).find(h => h.id === b.heatId)?.furnace || b.furnace || '', 'Shell no.': b.shellNo ?? '', Spec: b.spec || '', Qty: b.qty, Unit: b.unit, Status: b.status, 'Flow state': isPullBatch(b) ? (FLOW_STATE_INFO[batchFlowState(b)]?.label || '') : '', Route: b.route || '', Machine: b.routeMachine || '', Spinner: b.spinnerMachine || '', Basket: b.basketNo || '', 'Current stage': batchStages(b)[b.currentStageIndex] || '', Started: b.startedAt, 'Scrap kg': (b.scrapLog || []).reduce((s, r) => s + Number(r.qty || 0), 0), 'Final weight (kg)': batchPackedQty(b) > 0 ? batchPackedQty(b) : '', 'Yield %': batchPackedQty(b) > 0 && b.unit === 'kg' && Number(b.qty) > 0 ? Number(((batchPackedQty(b) / Number(b.qty)) * 100).toFixed(1)) : '' })),
         'Scrap log': bs.flatMap(b => (b.scrapLog || []).map(r => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Stage: r.stage, 'Qty (kg)': r.qty, Reason: r.reason, At: r.at, By: r.by }))),
         'History': bs.flatMap(b => (b.history || []).map(h => ({ 'Production order': b.productionOrderNo || '', 'Batch code': b.batchCode, Event: h.label, At: h.at, By: h.by }))),
       };
@@ -3608,7 +3649,20 @@ const REPORTS = [
   { id: 'capa', group: 'Quality', title: 'CAPA register', desc: 'Corrective and preventive actions with status.',
     build: (c, rg) => ({ 'CAPA': (c.capaRecords || []).filter(x => inRangeIso(x.createdAt, rg)).map(x => flatRow(x)) }) },
   { id: 'dpr', group: 'Management', title: 'Daily production reports', desc: 'Saved shift reports (flattened — one row per saved report).',
-    build: (c, rg) => ({ 'Daily reports': Object.entries(c.dprEntries || {}).filter(([k]) => inRangeDay(k.split('::')[0], rg)).map(([k, v]) => ({ Key: k, ...flatRow(v) })) }) },
+    build: (c, rg) => {
+      const keys = Object.keys(c.dprEntries || {}).filter(k => inRangeDay(k.split('::')[0], rg)).sort();
+      const rp = (v) => (v == null || !isFinite(v) ? '' : Number(v.toFixed(1)));
+      const num = (v) => (v === undefined || v === null || v === '' || isNaN(Number(v)) ? '' : Number(v));
+      // one row per machine per saved shift, with Availability / Performance / Quality / OEE
+      const oeeRows = keys.flatMap(k => {
+        const [date, shift] = k.split('::');
+        const rows = mergeDprWithLegacy(c.dprEntries[k]?.rows, (c.machineProd || {})[k]);
+        return dprComputeMachineRows(rows, (c.dprClosed || {})[k] || null, {})
+          .filter(m => Object.values(m.typed || {}).some(v => v !== '' && v != null) || m.r.planOutput != null || m.r.actualOutput != null)
+          .map(m => ({ Date: date, Shift: shift, Process: m.process, Machine: m.machineId, 'Plan (MT)': num(m.r.planOutput), 'Actual (MT)': num(m.r.actualOutput), 'Achiev %': rp(m.achievement), 'Input (MT)': num(m.r.input), 'Good output (MT)': num(m.r.goodOutput), 'Yield %': rp(m.yieldPct), 'Run (h)': num(m.r.runTime), 'Downtime (h)': num(m.r.downtime), 'Availability %': rp(m.availability), 'Performance %': rp(m.performance), 'Quality %': rp(m.quality), 'OEE %': rp(m.oee) }));
+      });
+      return { 'Daily reports': keys.map(k => ({ Key: k, ...flatRow(c.dprEntries[k]) })), 'Machine OEE': oeeRows };
+    } },
 ];
 const REPORT_BY_ID = Object.fromEntries(REPORTS.map(r => [r.id, r]));
 function runReport(id, ctx, rg, filename) {
@@ -4522,6 +4576,10 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
   });
   useEffect(() => { try { localStorage.setItem(widgetKey, JSON.stringify(activeWidgets)); } catch (e) { /* ignore */ } }, [activeWidgets, widgetKey]);
   const reportCtx = useContext(ReportCtx);
+  const MDoee = useContext(MasterDataCtx);
+  const oeeToday = useMemo(() => {
+    try { return dprDayOee(todayKey(), { dprEntries, machineProd, dprClosed: reportCtx?.dprClosed, batches, heats, charges: reportCtx?.charges, spinnerPlans, processPlans: reportCtx?.processPlans }, MDoee?.shiftDayStart, MDoee?.shiftNightStart); } catch (e) { return null; }
+  }, [dprEntries, machineProd, reportCtx?.dprClosed, reportCtx?.charges, reportCtx?.processPlans, batches, heats, spinnerPlans, MDoee?.shiftDayStart, MDoee?.shiftNightStart]);
   const runIntervals = useMemo(() => machineRunIntervals(batches, reportCtx?.charges), [batches, reportCtx?.charges]);
   const maintAlerts = useMemo(() => computeMaintenanceAlerts(maintenanceLogs, pmTasks, Date.now(), runIntervals), [maintenanceLogs, pmTasks, runIntervals]);
   const toggleWidget = (w) => setActiveWidgets(prev => prev.includes(w) ? prev.filter(x => x !== w) : [...prev, w]);
@@ -4654,7 +4712,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
         {activeWidgets.includes('Sales') && <SalesQuotationEngine settings={settings} user={user} />}
         {activeWidgets.includes('Floor Map') && <StrategicFloorMap furnaces={furnaces} maintenanceLogs={maintenanceLogs} />}
         {activeWidgets.includes('Passports') && <DigitalProductPassport batches={batches} heats={heats} energyLogs={energyLogs} />}
-        {activeWidgets.includes('OEE') && <OEEDashboard downtimeLogs={maintenanceLogs} planRows={[]} />}
+        {activeWidgets.includes('OEE') && <OEEDashboard downtimeLogs={maintenanceLogs} planRows={[]} summary={oeeToday} />}
         {activeWidgets.includes('Yield & Loss') && <YieldLossWidget batches={batches} />}
         {activeWidgets.includes('Reject Pareto') && <RejectParetoWidget batches={batches} />}
         {activeWidgets.includes('Energy') && <EnergySummaryWidget energyLogs={energyLogs} batches={batches} onOpen={() => setTab('energy')} />}
@@ -10287,6 +10345,145 @@ function dprPackingOutputMT(dprEntries, machineProd, monthKey) {
   return total;
 }
 
+
+/* ---- OEE + Daily Report Excel export ----
+   OEE = Availability x Performance x Quality, each capped at 100%.
+     Availability = (Run h - Downtime h) / Run h
+     Performance  = Actual output / Plan output
+     Quality      = Good output / Input
+   A figure that is missing (no run time, no plan, no input) leaves that machine's OEE blank. */
+function dprOee(r) {
+  const has = (v) => v !== undefined && v !== null && v !== '';
+  const cap = (v) => (v == null || !isFinite(v) ? null : Math.max(0, Math.min(100, v)));
+  const run = Number(r.runTime) || 0, down = Number(r.downtime) || 0;
+  const availability = run > 0 ? cap(((run - down) / run) * 100) : null;
+  const performance = has(r.actualOutput) && has(r.planOutput) ? cap(pct(r.actualOutput, r.planOutput)) : null;
+  const quality = has(r.goodOutput) && has(r.input) ? cap(pct(r.goodOutput, r.input)) : null;
+  const oee = availability != null && performance != null && quality != null ? (availability * performance * quality) / 10000 : null;
+  return { availability, performance, quality, oee };
+}
+// One row per machine for a shift: plan/actual come from the saved snapshot, else typed, else automatic.
+function dprComputeMachineRows(rows, closed, auto) {
+  const hasVal = (v) => v !== undefined && v !== null && v !== '';
+  return DPR_MACHINE_ROWS.map(({ process, machineId }) => {
+    const typed = (rows || {})[machineId] || {};
+    const sr = closed ? (closed.rows || {})[machineId] || {} : null;
+    const r = { ...typed, planOutput: closed ? sr.planOutput : (hasVal(typed.planOutput) ? typed.planOutput : (auto || {})[machineId]?.planOutput), actualOutput: closed ? sr.actualOutput : (hasVal(typed.actualOutput) ? typed.actualOutput : (auto || {})[machineId]?.actualOutput) };
+    const yieldPct = pct(r.goodOutput, r.input);
+    const achievement = pct(r.actualOutput, r.planOutput);
+    const o = dprOee(r);
+    return { process, machineId, r, typed, sr, yieldPct, achievement, oee: o.oee, availability: o.availability, performance: o.performance, quality: o.quality };
+  });
+}
+// Plant-level OEE for one day (all shifts), used by the dashboard widget.
+function dprDayOee(date, c, dayStart, nightStart) {
+  const acc = {};
+  shiftsFor(date, c.dprEntries).forEach(shift => {
+    const key = `${date}::${shift}`;
+    const rows = mergeDprWithLegacy((c.dprEntries || {})[key]?.rows, (c.machineProd || {})[key]);
+    const closed = (c.dprClosed || {})[key] || null;
+    const auto = closed || shift === 'Eve' ? {} : dprAutoRows(date, shift, c, dayStart, nightStart);
+    dprComputeMachineRows(rows, closed, auto).forEach(m => {
+      const a = (acc[m.machineId] ||= { machineId: m.machineId, runTime: 0, downtime: 0, planOutput: 0, actualOutput: 0, goodOutput: 0, input: 0, hasPlan: false, hasActual: false, hasGood: false, hasInput: false });
+      const n = (v) => Number(v) || 0, has = (v) => v !== undefined && v !== null && v !== '';
+      a.runTime += n(m.r.runTime); a.downtime += n(m.r.downtime);
+      if (has(m.r.planOutput)) { a.planOutput += n(m.r.planOutput); a.hasPlan = true; }
+      if (has(m.r.actualOutput)) { a.actualOutput += n(m.r.actualOutput); a.hasActual = true; }
+      if (has(m.r.goodOutput)) { a.goodOutput += n(m.r.goodOutput); a.hasGood = true; }
+      if (has(m.r.input)) { a.input += n(m.r.input); a.hasInput = true; }
+    });
+  });
+  const list = Object.values(acc).map(a => ({ ...a, ...dprOee({ runTime: a.runTime, downtime: a.downtime, planOutput: a.hasPlan ? a.planOutput : undefined, actualOutput: a.hasActual ? a.actualOutput : undefined, goodOutput: a.hasGood ? a.goodOutput : undefined, input: a.hasInput ? a.input : undefined }) }));
+  const sum = (k) => list.reduce((t, a) => t + a[k], 0);
+  const withRun = list.filter(a => a.runTime > 0);
+  const tot = dprOee({
+    runTime: withRun.reduce((t, a) => t + a.runTime, 0), downtime: withRun.reduce((t, a) => t + a.downtime, 0),
+    planOutput: list.some(a => a.hasPlan) ? list.filter(a => a.hasPlan && a.hasActual).reduce((t, a) => t + a.planOutput, 0) : undefined,
+    actualOutput: list.some(a => a.hasActual) ? list.filter(a => a.hasPlan && a.hasActual).reduce((t, a) => t + a.actualOutput, 0) : undefined,
+    goodOutput: list.some(a => a.hasGood && a.hasInput) ? list.filter(a => a.hasGood && a.hasInput).reduce((t, a) => t + a.goodOutput, 0) : undefined,
+    input: list.some(a => a.hasGood && a.hasInput) ? list.filter(a => a.hasGood && a.hasInput).reduce((t, a) => t + a.input, 0) : undefined,
+  });
+  const ranked = list.filter(a => a.oee != null).sort((a, b) => a.oee - b.oee);
+  return { ...tot, hasRunTime: withRun.length > 0, machines: list.length, lowest: ranked[0] || null };
+}
+function buildDprWorkbook({ date, shift, dprEntries, machineProd, dq, wipBuffer, batches, spinnerPlans, targetActual, ctx, capacities, dayStart, nightStart }) {
+  const rp = (v) => (v == null || !isFinite(v) ? '' : Number(v.toFixed(1)));
+  const num = (v) => (v === undefined || v === null || v === '' || isNaN(Number(v)) ? '' : Number(v));
+  const key = `${date}::${shift}`;
+  const entry = (dprEntries || {})[key] || { header: {}, rows: {} };
+  const rows = mergeDprWithLegacy(entry.rows, (machineProd || {})[key]);
+  const closed = (ctx.dprClosed || {})[key] || null;
+  const auto = closed || shift === 'Eve' ? {} : dprAutoRows(date, shift, ctx, dayStart, nightStart);
+  const machines = dprComputeMachineRows(rows, closed, auto);
+  const h = entry.header || {};
+  const sheets = {};
+  sheets['Report info'] = [{ Date: date, Shift: shift, Plant: h.plant || '', 'Product line': h.productLine || '', Supervisor: h.supervisor || '', 'Approved by': h.approvedBy || '', 'Report no.': h.reportNo || '', Remarks: h.remarks || '', 'Shift closed at': closed?.closedAt || '' }];
+  // 1. Production & machine productivity (with OEE)
+  const prod = machines.map(c => ({
+    Date: date, Shift: shift, Process: c.process, Machine: c.machineId,
+    'Plan (MT)': num(c.r.planOutput), 'Actual (MT)': num(c.r.actualOutput), 'Achiev %': rp(c.achievement),
+    'Start WT': num(c.r.shiftStartWT), 'End WT': num(c.r.shiftEndWT),
+    'Input (MT)': num(c.r.input), 'Good output (MT)': num(c.r.goodOutput), 'Scrap/Trim (MT)': num(c.r.scrapTrim), 'Yield %': rp(c.yieldPct),
+    'Run (h)': num(c.r.runTime), 'Downtime (h)': num(c.r.downtime),
+    'Availability %': rp(c.availability), 'Performance %': rp(c.performance), 'Quality %': rp(c.quality), 'OEE %': rp(c.oee),
+    'Speed (MT/h)': Number(c.r.runTime) > 0 ? Number((Number(c.r.goodOutput || 0) / Number(c.r.runTime)).toFixed(2)) : '',
+    'Downtime reason': c.r.downtimeReason || '', Remarks: c.r.remarks || '',
+  }));
+  const T = machines.reduce((a, c) => { const n = (v) => Number(v) || 0; return { plan: a.plan + n(c.r.planOutput), actual: a.actual + n(c.r.actualOutput), input: a.input + n(c.r.input), good: a.good + n(c.r.goodOutput), scrap: a.scrap + n(c.r.scrapTrim), run: a.run + n(c.r.runTime), down: a.down + n(c.r.downtime) }; }, { plan: 0, actual: 0, input: 0, good: 0, scrap: 0, run: 0, down: 0 });
+  const tO = dprOee({ runTime: T.run, downtime: T.down, planOutput: T.plan, actualOutput: T.actual, goodOutput: T.good, input: T.input });
+  prod.push({ Date: date, Shift: shift, Process: 'SHIFT TOTAL', Machine: '', 'Plan (MT)': T.plan, 'Actual (MT)': T.actual, 'Achiev %': rp(pct(T.actual, T.plan)), 'Input (MT)': T.input, 'Good output (MT)': T.good, 'Scrap/Trim (MT)': T.scrap, 'Yield %': rp(pct(T.good, T.input)), 'Run (h)': T.run, 'Downtime (h)': T.down, 'Availability %': rp(tO.availability), 'Performance %': rp(tO.performance), 'Quality %': rp(tO.quality), 'OEE %': rp(tO.oee) });
+  sheets['Production & Machine'] = prod;
+  // 2. Downtime & quality
+  const data = (dq || {})[key] || { downtime: [], quality: [] };
+  const mins = (r) => { if (!r.startTime || !r.endTime) return ''; const [a, b] = r.startTime.split(':').map(Number), [c, d] = r.endTime.split(':').map(Number); const m = (c * 60 + d) - (a * 60 + b); return m > 0 ? m : 0; };
+  sheets['Downtime'] = (data.downtime || []).map(r => ({ Date: date, Shift: shift, Machine: r.machineId, Process: r.process || '', Start: r.startTime, End: r.endTime, 'Duration (min)': mins(r), Category: r.category, 'Sub-category': r.subCategory || '', 'Root cause': r.rootCause || '', 'Action taken': r.actionTaken || '', Responsible: r.responsible || '', Status: r.status || '', 'Verified by': r.verifiedBy || '' }));
+  sheets['Quality'] = (data.quality || []).map(r => ({ Date: date, Shift: shift, Machine: r.machineId, Process: r.process || '', 'Product code': r.productCode || '', 'Defect type': r.defectType, 'Qty (MT)': num(r.qty), 'Sample qty': num(r.sampleQty), 'Defect qty': num(r.defectQty), 'Defect %': Number(r.sampleQty) > 0 ? rp((Number(r.defectQty) || 0) / Number(r.sampleQty) * 100) : '', Disposition: r.disposition || '', Inspector: r.inspector || '', Time: r.time || '', Action: r.action || '' }));
+  // 3. WIP / buffer
+  const wip = computeWip(batches);
+  const dayW = wipBuffer?.days?.[date] || {}, limits = wipBuffer?.limits || {};
+  const wTargets = wipPlanTargets((spinnerPlans || {})[date] || []);
+  sheets['WIP-Buffer'] = wip.map(b => {
+    const limit = Number(limits[b.id]) || 0, phys = dayW[b.id] || {}, units = Object.keys(b.qtyByUnit);
+    const sys = units.length <= 1 ? (b.qtyByUnit[units[0]] || 0) : null;
+    const isRework = b.id === 'ROLLING_REWORK';
+    const manual = dayW[b.id]?.target, auto2 = wTargets[b.id] || {};
+    const tUnits = Object.keys(auto2).filter(u => auto2[u] > 0);
+    let tVal = '', tUnit = '', tSrc = '';
+    if (isRework) { tVal = 0; tSrc = 'Always zero'; }
+    else if (manual !== undefined && manual !== '') { tVal = Number(manual); tUnit = Object.keys(auto2)[0] || 'kg'; tSrc = 'Manual'; }
+    else if (tUnits.length === 1) { tVal = auto2[tUnits[0]]; tUnit = tUnits[0]; tSrc = 'Production Plan'; }
+    else if (tUnits.length > 1) { tVal = tUnits.map(u => fmtQty(auto2[u], u)).join(' + '); tSrc = 'Production Plan'; }
+    const over = limit > 0 && b.count > limit, aged = b.count > 0 && b.oldestMinutes > BUFFER_AGED_MINUTES;
+    const above = !isRework && typeof tVal === 'number' && units.length === 1 && units[0] === tUnit && sys > tVal + 1e-9;
+    const variance = phys.physical !== undefined && phys.physical !== '' && sys != null ? Number(phys.physical) - sys : '';
+    return { Date: date, 'WIP point / buffer': b.label, Detail: b.sub || '', Orders: b.count, 'Actual WIP (live)': fmtQtyByUnit(b.qtyByUnit), 'Actual qty': sys == null ? '' : sys, Unit: units.length === 1 ? units[0] : (units.length ? 'mixed' : ''), 'Target': tVal, 'Target unit': tUnit, 'Target source': tSrc, 'Oldest wait': b.count ? fmtDuration(b.oldestMinutes) : '', 'Limit (orders)': limit || '', Status: over ? 'Over limit' : (isRework && b.count) ? 'Rework' : above ? 'Above target' : aged ? 'Aged > 24h' : 'OK', 'Physical count': num(phys.physical), Variance: variance, Remarks: phys.remarks || '' };
+  });
+  // 4. Target vs actual (daily and month-to-date)
+  const dataTA = (targetActual || {})[date] || {};
+  const mk = monthKeyOf(date), dayKeys = [];
+  for (let d = `${mk}-01`; d <= date && dayKeys.length < 32; d = addDaysKey(d, 1)) dayKeys.push(d);
+  const taCtx = { spinnerPlans, batches, dprEntries, machineProd };
+  const autoByDay = Object.fromEntries(dayKeys.map(d => [d, autoTargetActualForDate(d, taCtx)]));
+  const autoToday = autoByDay[date] || autoTargetActualForDate(date, taCtx);
+  let tt = { dp: 0, da: 0, mp: 0, ma: 0 };
+  const ta = TARGET_CATEGORIES.map(cat => {
+    const res = resolveTargetActual(dataTA[cat], autoToday[cat]);
+    let mp = 0, ma = 0;
+    dayKeys.forEach(d => { const r = resolveTargetActual(((targetActual || {})[d] || {})[cat], (autoByDay[d] || {})[cat]); mp += r.plan; ma += r.actual; });
+    tt = { dp: tt.dp + res.plan, da: tt.da + res.actual, mp: tt.mp + mp, ma: tt.ma + ma };
+    return { Date: date, 'Process / Product': cat, 'Daily plan (MT)': res.plan, 'Plan source': res.planSource || '', 'Daily actual (MT)': res.actual, 'Actual source': res.actualSource || '', 'Daily achiev %': rp(pct(res.actual, res.plan)), 'MTD plan (MT)': mp, 'MTD actual (MT)': ma, 'MTD achiev %': rp(pct(ma, mp)), 'Gap (MT)': Number((res.actual - res.plan).toFixed(3)) };
+  });
+  ta.push({ Date: date, 'Process / Product': 'TOTAL', 'Daily plan (MT)': tt.dp, 'Daily actual (MT)': tt.da, 'Daily achiev %': rp(pct(tt.da, tt.dp)), 'MTD plan (MT)': tt.mp, 'MTD actual (MT)': tt.ma, 'MTD achiev %': rp(pct(tt.ma, tt.mp)), 'Gap (MT)': Number((tt.da - tt.dp).toFixed(3)) });
+  sheets['Target vs Actual'] = ta;
+  // 5. Monthly capacity
+  const mt = dprMonthTotals(mk, ctx, dayStart, nightStart);
+  sheets['Monthly capacity'] = DPR_PROCESS_NAMES.map(pr => {
+    const cap = capacityStatus((capacities || {})[pr], mt[pr].actual);
+    return { Month: mk, Process: pr, 'Monthly capacity (MT)': cap ? cap.capacity : '', 'Done so far (MT)': mt[pr].actual, 'Used %': cap ? cap.pct : '', 'Planned (MT)': mt[pr].plan, 'Left (MT)': cap ? cap.left : '', 'Over by (MT)': cap && cap.over ? cap.overBy : '' };
+  });
+  return sheets;
+}
+
 function DprCapacitySection({ ctx, capacities, dayStart, nightStart, date }) {
   const [month, setMonth] = useState(date.slice(0, 7));
   const totals = dprMonthTotals(month, ctx, dayStart, nightStart);
@@ -10338,15 +10535,7 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
     onUpdateDpr(dpKey, { ...entry, rows: { ...entry.rows, [machineId]: { ...prevRow, [field]: value } } });
   };
 
-  const computed = DPR_MACHINE_ROWS.map(({ process, machineId }) => {
-    const typed = rows[machineId] || {};
-    const sr = closed ? (closed.rows || {})[machineId] || {} : null;
-    const r = { ...typed, planOutput: closed ? sr.planOutput : (hasVal(typed.planOutput) ? typed.planOutput : auto[machineId]?.planOutput), actualOutput: closed ? sr.actualOutput : (hasVal(typed.actualOutput) ? typed.actualOutput : auto[machineId]?.actualOutput) };
-    const yieldPct = pct(r.goodOutput, r.input);
-    const achievement = pct(r.actualOutput, r.planOutput);
-    const oee = r.runTime > 0 ? Math.max(0, ((Number(r.runTime) - Number(r.downtime || 0)) / Number(r.runTime)) * 100) : null;
-    return { process, machineId, r, typed, sr, yieldPct, achievement, oee };
-  });
+  const computed = dprComputeMachineRows(rows, closed, auto);
   const totals = computed.reduce((acc, c) => ({
     planOutput: acc.planOutput + Number(c.r.planOutput || 0),
     actualOutput: acc.actualOutput + Number(c.r.actualOutput || 0),
@@ -10356,6 +10545,7 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
     runTime: acc.runTime + Number(c.r.runTime || 0),
     downtime: acc.downtime + Number(c.r.downtime || 0),
   }), { planOutput: 0, actualOutput: 0, input: 0, goodOutput: 0, scrapTrim: 0, runTime: 0, downtime: 0 });
+  const totOee = dprOee(totals);
 
   return (
     <div>
@@ -10397,10 +10587,10 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
 
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table data-testid="dpr-unified-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 1500 }}>
+          <table data-testid="dpr-unified-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 1750 }}>
             <thead>
               <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                {['Process', 'Machine', 'Plan (MT)', 'Actual (MT)', 'Achiev %', 'Start WT', 'End WT', 'Input (MT)', 'Good Output', 'Scrap/Trim', 'Yield %', 'Run (h)', 'Downtime (h)', 'OEE %', 'Speed (MT/h)', 'Downtime reason', 'Remarks'].map(h => (
+                {['Process', 'Machine', 'Plan (MT)', 'Actual (MT)', 'Achiev %', 'Start WT', 'End WT', 'Input (MT)', 'Good Output', 'Scrap/Trim', 'Yield %', 'Run (h)', 'Downtime (h)', 'Avail %', 'Perf %', 'Qual %', 'OEE %', 'Speed (MT/h)', 'Downtime reason', 'Remarks'].map(h => (
                   <th key={h} style={{ padding: '8px 10px', fontSize: 10.5, color: C.subtext, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -10428,7 +10618,10 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
                     <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.yieldPct != null && c.yieldPct < 95 ? C.red : C.green }}>{fmtPct(c.yieldPct)}</td>
                     <td style={{ padding: '6px 10px' }}><MiniInput label={`Run ${c.machineId}`} value={c.r.runTime} onChange={v => setRow(c.machineId, 'runTime', v)} width={56} step="0.1" /></td>
                     <td style={{ padding: '6px 10px' }}><MiniInput label={`Downtime ${c.machineId}`} value={c.r.downtime} onChange={v => setRow(c.machineId, 'downtime', v)} width={56} step="0.1" /></td>
-                    <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.oee != null && c.oee < 80 ? C.amber : C.green }}>{fmtPct(c.oee)}</td>
+                    <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtPct(c.availability)}</td>
+                    <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtPct(c.performance)}</td>
+                    <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtPct(c.quality)}</td>
+                    <td className="font-mono" data-testid={`oee-${c.machineId}`} title="OEE = Availability x Performance x Quality" style={{ padding: '6px 10px', fontWeight: 700, color: c.oee == null ? C.faint : c.oee < 65 ? C.red : c.oee < 85 ? C.amber : C.green }}>{fmtPct(c.oee)}</td>
                     <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtNum(speed, 1)}</td>
                     <td style={{ padding: '6px 10px' }}><MiniText label={`Downtime reason ${c.machineId}`} value={c.r.downtimeReason} onChange={v => setRow(c.machineId, 'downtimeReason', v)} width={130} /></td>
                     <td style={{ padding: '6px 10px' }}><MiniText label={`Remarks ${c.machineId}`} value={c.r.remarks} onChange={v => setRow(c.machineId, 'remarks', v)} width={110} /></td>
@@ -10449,7 +10642,11 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(pct(totals.goodOutput, totals.input))}</td>
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.runTime, 1)}</td>
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.downtime, 1)}</td>
-                <td colSpan={4}></td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(totOee.availability)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(totOee.performance)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(totOee.quality)}</td>
+                <td className="font-mono" data-testid="oee-total" style={{ padding: '8px 10px' }}>{fmtPct(totOee.oee)}</td>
+                <td colSpan={3}></td>
               </tr>
             </tfoot>
           </table>
@@ -10853,7 +11050,7 @@ function DprTab({ dprEntries, onUpdateDpr, machineProd, dq, onUpdateDq, wipBuffe
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12 }}>
         <SectionTitle sub="Replaces the daily Excel DPR — production and machine productivity are one report now, filled in per shift, right here.">Daily Report</SectionTitle>
-        <Button className="no-print" variant="secondary" icon={Printer} onClick={() => window.print()}>Print / Export PDF</Button>
+        <span className="no-print"><ExportButton label="Download Excel" onExport={() => exportToExcel(`neelsuite-daily-report-${date}-${shift}.xlsx`, buildDprWorkbook({ date, shift, dprEntries, machineProd, dq, wipBuffer, batches, spinnerPlans, targetActual, ctx, capacities: MDd.capacities, dayStart: MDd.shiftDayStart, nightStart: MDd.shiftNightStart }))} /></span>
       </div>
       {/* Only visible when printing — the app chrome (sidebar, header, nav) is hidden via print CSS,
           so this gives the printed page proper context in its place. */}
@@ -16105,7 +16302,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       ) : (
         <BatchIndexCtx.Provider value={batchIndex}>
         <MasterDataCtx.Provider value={{ customers: master.customers || [], sizes: master.sizes || [], standards: master.standards || [], standardRequired: master.standardRequired || {}, toleranceLocked: master.toleranceLocked || {}, potCapacityKg: settingValue(settings, 'potCapacityKg'), capacities: master.capacities || {}, shiftDayStart: settingValue(settings, 'shiftDayStart'), shiftNightStart: settingValue(settings, 'shiftNightStart'), orderListClosestFirst: settingValue(settings, 'orderListClosestFirst'), seeCustomer: canDo(user.role, 'customer.see'), specs: (master.lists || {}).specifications?.items || [], canAdd: canDo(user.role, 'master.add'), save: addMasterFromForm }}>
-        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, labResults, pmTasks, cycleCounts, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries }}>
+        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, labResults, pmTasks, cycleCounts, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries, machineProd, spinnerPlans, processPlans, dprClosed }}>
         <Shell tab={tab} setTab={setTab} user={user} onLogout={handleLogout} lastSync={lastSync} onRefresh={loadAll}
           notifications={notifications} onMarkNotificationsRead={markNotificationsRead} isOnline={isOnline} pendingSyncCount={pendingSyncCount}
           orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance}>
