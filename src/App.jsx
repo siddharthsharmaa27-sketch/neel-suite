@@ -365,9 +365,26 @@ function orderDispatchedQty(o) {
   if (o.dispatchedQty != null) return Number(o.dispatchedQty) || 0;
   return o.status === 'Dispatched' || o.status === 'Delivered' ? Number(o.qty) || 0 : 0;
 }
+// Dispatch tolerance: production never lands exactly on the order qty, so
+// kg orders may ship up to 100 kg MORE than ordered, and count as fully
+// dispatched once within 100 kg LESS than ordered (+/- 100 kg).
+const DISPATCH_TOLERANCE_KG = 100;
+function toleranceFor(unit) { return unit === 'kg' ? DISPATCH_TOLERANCE_KG : 0; }
+// True when `dispatched` has reached the ordered qty (within tolerance).
+function isFullyDispatched(qty, dispatched, unit) {
+  const q = Number(qty) || 0, d = Number(dispatched) || 0;
+  return d >= q - 1e-9 || (d > 0 && d >= q - toleranceFor(unit) - 1e-9);
+}
 function orderPendingQty(o) {
   if (isOrderClosed(o)) return 0;
-  return Math.max(0, (Number(o.qty) || 0) - orderDispatchedQty(o));
+  const dispatched = orderDispatchedQty(o);
+  if (isFullyDispatched(o.qty, dispatched, o.unit)) return 0;
+  return Math.max(0, (Number(o.qty) || 0) - dispatched);
+}
+// The most that can still be posted against an order: pending + tolerance.
+function orderMaxDispatchQty(o) {
+  if (isOrderClosed(o)) return 0;
+  return Math.max(0, (Number(o.qty) || 0) + toleranceFor(o.unit) - orderDispatchedQty(o));
 }
 // Maps a legacy (push-flow) batch reaching a given production stage to what
 // the linked order's status should become. Pull-flow batches (flowVersion 2)
@@ -428,6 +445,8 @@ const KEYS = {
   processPlans: 'ctpm:process_plans',
   dprClosed: 'ctpm:dpr_closed',
   tooling: 'ctpm:tooling_dies',
+  lab: 'ctpm:lab_results',
+  cycleCounts: 'ctpm:cycle_counts',
   machineEnergy: 'ctpm:machine_energy_logs',
 };
 
@@ -469,6 +488,8 @@ const MOVEMENT_TYPES = {
   '262': { text: 'GI for production order - reversal', sign: +1, stock: 'raw' },
   '311': { text: 'Transfer posting storage loc to storage loc', sign: 0, stock: 'raw' },
   '551': { text: 'GI scrapping', sign: -1, stock: 'raw' },
+  '701': { text: 'Inventory difference — gain (physical count)', sign: +1, stock: 'any' },
+  '702': { text: 'Inventory difference — loss (physical count)', sign: -1, stock: 'any' },
   '552': { text: 'GI scrapping - reversal', sign: +1, stock: 'raw' },
   '501': { text: 'Receipt without purchase order', sign: +1, stock: 'raw' },
   '601': { text: 'GI for delivery (sales)', sign: -1, stock: 'finished' },
@@ -746,9 +767,10 @@ function dispatchLineProgress(line, date, deliveries, today) {
     .filter(d => d.orderId === line.orderId && d.date === date)
     .reduce((s, d) => s + Number(d.totalQty || 0), 0);
   const planned = Number(line.plannedQty) || 0;
-  const short = Math.max(0, planned - dispatched);
+  const planTol = dispatched > 0 ? toleranceFor(line.unit) : 0;   // +/- 100 kg on kg lines
+  const short = dispatched >= planned - planTol - 1e-9 ? 0 : Math.max(0, planned - dispatched);
   let status;
-  if (dispatched >= planned && planned > 0) status = 'Complete';
+  if (short === 0 && planned > 0 && dispatched > 0) status = 'Complete';
   else if (date > today) status = 'Planned';
   else if (date === today) status = dispatched > 0 ? 'In progress' : 'Due today';
   else status = dispatched > 0 ? 'Part dispatched' : 'Not dispatched';
@@ -1061,6 +1083,24 @@ function calcGramPerMeter(od, thk) {
 }
 // metres of tube in a given weight (kg) at a given g/m; '' / 0 -> 0
 function metersFromKg(kg, gm) { return gm > 0 && Number(kg) > 0 ? Number(kg) * 1000 / gm : 0; }
+// "9.57 X 0.80 MM" (the planned size) -> { od: 9.57, thk: 0.8 }; null when it is not written as OD x thickness in mm
+function planSizeOdThk(spec) {
+  if (!spec) return null;
+  const t = normalizeSpec(String(spec));
+  const m = t.match(/^\s*(\d+(?:\.\d+)?)\s*(?:MM)?\s*[xX]\s*(\d+(?:\.\d+)?)\s*MM\b/i);
+  if (!m) return null;
+  const od = Number(m[1]), thk = Number(m[2]);
+  return od > 0 && thk > 0 && thk < od ? { od, thk } : null;
+}
+// g/m of a production order: from its target size, else from the size written on it
+function batchGramPerMeter(b) {
+  const g = calcGramPerMeter(b?.targetOD, b?.targetThickness);
+  if (g > 0) return g;
+  const z = planSizeOdThk(b?.spec);
+  return z ? calcGramPerMeter(z.od, z.thk) : 0;
+}
+// CTL output is counted in pieces; LWC / PCC in coils
+function coilWord(route) { return route === 'CTL' ? 'pieces' : 'coils'; }
 function fmtMeters(m) { return Number(m).toLocaleString(undefined, { maximumFractionDigits: 1 }); }
 
 function parseWeightPerM(text) {
@@ -1524,10 +1564,20 @@ function Code39Barcode({ value, height = 50, narrow = 2.2 }) {
   );
 }
 
+// "2026-10-17T09:07:16.683Z" is how the app stores times; in Excel people want local time they can read: "17-Oct-2026 14:37"
+const XL_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function xlReadable(v) {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) return v;
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return v;
+  const z = (n) => String(n).padStart(2, '0');
+  return `${z(d.getDate())}-${XL_MONTHS[d.getMonth()]}-${d.getFullYear()} ${z(d.getHours())}:${z(d.getMinutes())}`;
+}
 function exportToExcel(filename, sheets) {
   try {
     const wb = XLSX.utils.book_new();
-    Object.entries(sheets).forEach(([name, rows]) => {
+    Object.entries(sheets).forEach(([name, rawRows]) => {
+      const rows = (rawRows || []).map(r => (r && typeof r === 'object' ? Object.fromEntries(Object.entries(r).map(([k, v]) => [k, xlReadable(v)])) : r));
       const ws = XLSX.utils.json_to_sheet(rows && rows.length ? rows : [{}]);
       // readable column widths (longest cell in each column, capped)
       const cols = Object.keys((rows && rows[0]) || {});
@@ -2787,13 +2837,25 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
 function EnergyTrackingTab({ energyLogs, onLogMachineEnergy }) {
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [readings, setReadings] = useState({});
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
 
   const handleSave = () => {
+    setMsg('');
+    setErr('');
     const entries = Object.entries(readings).filter(([, kwh]) => Number(kwh) > 0);
-    if (!entries.length) { alert('Enter at least one meter reading.'); return; }
+    if (!entries.length) {
+      setErr('Enter at least one meter reading before saving.');
+      return;
+    }
+
     onLogMachineEnergy(entries.map(([machineId, kwh]) => ({ date: selectedDate, machineId, kwh: Number(kwh) })));
-    alert('Machine energy readings saved successfully!');
+
+    setMsg('Machine energy readings saved successfully!');
     setReadings({});
+
+    // Clear the success message after a few seconds
+    setTimeout(() => setMsg(''), 4000);
   };
 
   return (
@@ -2839,7 +2901,11 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy }) {
         </div>
       </Card>
 
-      <Button onClick={handleSave}>Save All Machine Readings</Button>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        <Button onClick={handleSave}>Save All Machine Readings</Button>
+        {err && <span role="alert" style={{ color: C.red, fontSize: 13, fontWeight: 600 }}>{err}</span>}
+        {msg && <span role="status" style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>{msg}</span>}
+      </div>
     </div>
   );
 }
@@ -3178,7 +3244,7 @@ function DynamicScheduler({ spinnerPlans, maintenanceLogs, capacities, onOpenPla
 
 
 // Maintenance alerts from real breakdown history (MTBF) and overdue PM tasks.
-function computeMaintenanceAlerts(maintenanceLogs, pmTasks, nowMs = Date.now()) {
+function computeMaintenanceAlerts(maintenanceLogs, pmTasks, nowMs = Date.now(), runIntervals = []) {
   const alerts = [];
   const open = new Set((maintenanceLogs || []).filter(m => m.status !== 'Resolved').map(m => m.machineId));
   const byMachine = {};
@@ -3199,6 +3265,11 @@ function computeMaintenanceAlerts(maintenanceLogs, pmTasks, nowMs = Date.now()) 
     const d = pmDueInfo(t);
     if (d.overdue) alerts.push({ id: `pm-${t.id}`, machine: t.machineId, score: 1 + Math.abs(d.daysUntilDue) / 30,
       issue: `Preventive task "${t.taskName}" is ${Math.ceil(Math.abs(d.daysUntilDue))} day(s) overdue.`, action: 'Do PM task' });
+    // running-hours tasks: warn at 90% of the interval, from the machine's real run time
+    const h = pmHoursInfo(t, runIntervals, nowMs);
+    if (h && !h.noData && (h.overdue || h.dueSoon)) alerts.push({ id: `pmh-${t.id}`, machine: t.machineId, score: 1 + h.pct / 100,
+      issue: `"${t.taskName}": ${h.used.toFixed(0)} of ${h.limit} running hours used since the last service (${Math.round(h.pct)}%)${!h.overdue && h.forecastDays != null ? ` — about ${Math.ceil(h.forecastDays)} day(s) left at the current pace` : ''}.`,
+      action: h.overdue ? 'Service now' : 'Plan service' });
   });
   return alerts.sort((a, b) => b.score - a.score).slice(0, 5);
 }
@@ -3444,13 +3515,22 @@ const REPORTS = [
         'Dies near limit': dies.map(d => ({ Type: d.type || 'Die', ID: d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit': d.limitMeters, 'Used %': Math.round((d.usageMeters / d.limitMeters) * 100) })),
       };
     } },
-  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'Every pot charge: material in the pot, times in/out, heating / soaking / cooling minutes, who did it.',
+  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'One sheet: every pot charge with its contents on the same rows (pot no., production order, basket, size, kg), times in/out and heating / soaking / cooling minutes.',
     build: (c, rg) => {
       const ch = (c.charges || []).filter(x => inRangeIso(x.chargedAt, rg));
-      return {
-        'Charges': ch.map(x => ({ 'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy, 'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '', 'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin), 'Total cycle (min)': x.potInAt && x.potOutAt ? minutesBetween(x.potInAt, x.potOutAt) : '', 'Forwarded to packing': x.forwardedAt || '', 'Total kg': potKg(x.items), Sizes: potSizeText(x.items), Notes: x.notes || '' })),
-        'Pot contents': ch.flatMap(x => (x.items || []).map(i => ({ 'Charge no': x.chargeNo, Pot: x.potNo, 'Production order': i.productionOrderNo || '', 'Batch code': i.batchCode || '', Basket: i.basketNo || '', Spec: i.spec, Qty: i.qty, Unit: i.unit, Route: i.route || '', Machine: i.routeMachine || '' }))),
-      };
+      const rows = [];
+      ch.forEach(x => {
+        const cycle = x.potInAt && x.potOutAt ? minutesBetween(x.potInAt, x.potOutAt) : '';
+        const base = { 'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy, 'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '', 'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin), 'Total cycle (min)': cycle, 'Forwarded to packing': x.forwardedAt || '' };
+        const items = x.items && x.items.length ? x.items : [null];
+        items.forEach((i, n) => rows.push({
+          ...base,
+          'Production order': i?.productionOrderNo || '', 'Batch code': i?.batchCode || '', Basket: i?.basketNo || '', Spec: i?.spec || '', Qty: i?.qty ?? '', Unit: i?.unit || '', Route: i?.route || '', Machine: i?.routeMachine || '',
+          'Pot total kg': n === 0 ? potKg(x.items) : '',   // shown once per pot so a column sum is not doubled
+          Notes: n === 0 ? (x.notes || '') : '',
+        }));
+      });
+      return { 'Annealing': rows };
     } },
   { id: 'production', group: 'Production', title: 'Production orders & stages', desc: 'All production orders with route, size, stage, quantities, plus the scrap log.',
     build: (c, rg) => {
@@ -3475,7 +3555,7 @@ const REPORTS = [
       const runs = (c.batches || []).filter(b => b.flow?.machine?.coils && inRangeIso(b.flow.machine.endedAt, rg));
       const month = rg?.from ? rg.from.slice(0, 7) : null;
       return {
-        'Runs': runs.map(b => { const m = b.flow.machine, k = m.coils, gm = calcGramPerMeter(b.targetOD, b.targetThickness); return { 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Route: b.route || '', Machine: m.machine, Basket: m.basketNo, Started: m.startedAt, Ended: m.endedAt || '', 'Input kg': k.inputKg ?? '', 'Coils made': k.made, 'Coils accepted': k.accepted, 'Coils rejected': k.rejected, 'Accepted kg': k.acceptedKg, 'Rejected kg': k.rejectedKg, 'Loss kg': k.lossKg ?? '', 'Accepted metres': gm > 0 ? Math.round(metersFromKg(k.acceptedKg, gm)) : '', 'Rejected metres': gm > 0 ? Math.round(metersFromKg(k.rejectedKg, gm)) : '', 'Reject reason': k.rejectReason || '', 'Yield %': Number(k.inputKg) > 0 ? Number(((k.acceptedKg / k.inputKg) * 100).toFixed(1)) : '' }; }),
+        'Runs': runs.map(b => { const m = b.flow.machine, k = m.coils, gm = batchGramPerMeter(b); return { 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Route: b.route || '', Machine: m.machine, Basket: m.basketNo, Started: m.startedAt, Ended: m.endedAt || '', 'Input kg': k.inputKg ?? '', 'Coils made': k.made, 'Coils accepted': k.accepted, 'Coils rejected': k.rejected, 'Accepted kg': k.acceptedKg, 'Rejected kg': k.rejectedKg, 'Loss kg': k.lossKg ?? '', 'Accepted metres': gm > 0 ? Math.round(metersFromKg(k.acceptedKg, gm)) : '', 'Rejected metres': gm > 0 ? Math.round(metersFromKg(k.rejectedKg, gm)) : '', 'Reject reason': k.rejectReason || '', 'Yield %': Number(k.inputKg) > 0 ? Number(((k.acceptedKg / k.inputKg) * 100).toFixed(1)) : '' }; }),
         'Yield by machine': computeYield(runs, null).map(r => ({ Machine: r.machine, Route: r.route, Runs: r.runs, 'Input kg': Math.round(r.inputKg), 'Accepted kg': Math.round(r.acceptedKg), 'Rejected kg': Math.round(r.rejectedKg), 'Loss kg': Math.round(r.lossKg), 'Yield %': r.yieldPct == null ? '' : Number(r.yieldPct.toFixed(1)), 'Reject %': r.rejectPct == null ? '' : Number(r.rejectPct.toFixed(1)) })),
       };
     } },
@@ -3487,11 +3567,28 @@ const REPORTS = [
       'Reject Pareto': computeRejectReasons(c.batches, rg?.from && rg?.to && rg.from.slice(0, 7) === rg.to.slice(0, 7) ? rg.from.slice(0, 7) : null).map(r => ({ Reason: r.reason, 'Kg': Number(r.kg.toFixed(1)), Count: r.count, '% of total': Number(r.pct.toFixed(1)), 'Cumulative %': Number(r.cumPct.toFixed(1)) })),
       'Quality releases': (c.batches || []).filter(b => b.flow?.quality).map(b => ({ 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Lot: b.flow.quality.lotNo, Decision: b.flow.quality.status, Note: b.flow.quality.note || '', By: b.flow.quality.releasedBy || b.flow.quality.holdBy || '' })),
     }) },
+  { id: 'lab', group: 'Quality', title: 'Lab & mechanical results', desc: 'Spectro chemistry per heat and tensile / yield / elongation / hardness per inspection lot.',
+    build: (c, rg) => {
+      const heatOf = (id) => (c.heats || []).find(h => h.id === id), batchOf = (id) => (c.batches || []).find(b => b.id === id);
+      const all = (c.labResults || []).filter(r => inRangeDay(r.testedOn, rg));
+      return {
+        'Chemistry': all.filter(r => r.kind === 'chemistry').map(r => { const h = heatOf(r.heatId); return { Heat: h ? (h.code || h.furnace || h.id) : '', Furnace: h?.furnace || '', 'Heat date': h?.date || '', Sample: r.sampleNo || '', 'Tested on': r.testedOn, ...Object.fromEntries(LAB_ELEMENTS.map(k => [`${k} %`, r.elements?.[k] ?? ''])), 'Tested by': r.testedBy, Remark: r.remark || '' }; }),
+        'Mechanical': all.filter(r => r.kind === 'mechanical').map(r => { const b = batchOf(r.batchId); return { 'Inspection lot': b?.flow?.quality?.lotNo || '', 'Production order': b?.productionOrderNo || '', Size: b?.spec || '', 'Tensile (MPa)': r.tensile, 'Yield (MPa)': r.yieldMPa, 'Elongation (%)': r.elongation, Hardness: r.hardness, 'Hardness scale': r.scale, 'Tested on': r.testedOn, 'Tested by': r.testedBy, Remark: r.remark || '' }; }),
+      };
+    } },
   { id: 'dispatch', group: 'Sales & dispatch', title: 'Orders & deliveries', desc: 'Orders with pending quantity and every delivery posted.',
     build: (c, rg) => ({
       'Orders': (c.orders || []).filter(o => inRangeDay(o.orderDate, rg)).map(o => ({ 'Order no': orderLabel(o), Customer: o.customer, 'Product type': o.productType || '', Spec: orderTitle(o), Ordered: o.qty, UOM: o.unit, Dispatched: orderDispatchedQty(o), Pending: orderPendingQty(o), 'Order date': o.orderDate, 'Delivery date': o.dueDate, Status: o.status, Salesperson: o.salesperson || '' })),
       'Deliveries': (c.deliveries || []).filter(d => inRangeDay(d.date, rg)).map(d => ({ Delivery: d.deliveryNo, Date: d.date, 'Order no': d.orderNo || '', Customer: d.customer, Qty: d.totalQty, UOM: d.unit, 'Kg issued': d.totalKg ?? '', 'Production orders': (d.lines || []).map(l => l.productionOrderNo || l.batchCode).join(', '), Vehicle: d.vehicle || '', 'LR no': d.lrNo || '' })),
     }) },
+  { id: 'cyclecount', group: 'Stores', title: 'Cycle counts (inventory audit)', desc: 'Every count: system vs counted quantity, the difference, who counted, who approved and what was posted.',
+    build: (c, rg) => {
+      const ss = (c.cycleCounts || []).filter(x => inRangeIso(x.createdAt, rg));
+      return {
+        'Count lines': ss.flatMap(x => (x.lines || []).map(l => { const v = countVariance(l); return { 'Count no': x.no, 'Count status': x.status, Barcode: l.barcode, Item: l.label, Unit: l.unit, 'System qty (at count)': l.expectedQty, 'Counted qty': l.countedQty, Difference: v.qty, 'Difference %': Number(v.pct.toFixed(2)), 'Alt unit': l.altUnit || '', 'System alt': l.expectedAlt ?? '', 'Counted alt': l.countedAlt ?? '', 'Counted by': l.countedBy, 'Counted at': l.countedAt, 'Line status': l.status === 'approved' ? 'Posted' : l.status === 'matched' ? 'Matched' : l.status === 'recount' ? 'Recount' : 'Counted', 'Decided by': l.decidedBy || '', 'Decided at': l.decidedAt || '', 'Posted qty': l.postedQty ?? '', 'Stock moved since count': l.movedQty ?? '', Note: l.note || '' }; })),
+        'Counts': ss.map(x => ({ 'Count no': x.no, Scope: x.scope, Status: x.status, 'Tolerance %': x.tolerancePct, Started: x.createdAt, 'Started by': x.createdBy, Closed: x.closedAt || '', 'Closed by': x.closedBy || '', 'Lines counted': (x.lines || []).length, 'Coverage %': x.coveragePct ?? '', 'Differences posted': (x.lines || []).filter(l => l.status === 'approved').length, Note: x.note || '' })),
+      };
+    } },
   { id: 'inventory', group: 'Stores', title: 'Inventory', desc: 'Raw material balances (with reorder flag) and finished goods.',
     build: (c) => ({
       'Raw materials': (c.rawItems || []).map(r => ({ Material: r.name, Kind: rawKindOf(r), 'On hand': r.qty, Unit: r.unit, 'Reorder level': r.reorderLevel, 'Needs reorder': Number(r.qty) <= Number(r.reorderLevel) ? 'YES' : '' })),
@@ -3499,6 +3596,11 @@ const REPORTS = [
     }) },
   { id: 'maintenance', group: 'Maintenance', title: 'Breakdowns', desc: 'Breakdown log with time to resolve, delay reasons and resolution notes.',
     build: (c, rg) => ({ 'Breakdowns': (c.maintenanceLogs || []).filter(m => inRangeIso(m.occurredAt, rg)).map(m => ({ Machine: m.machineId, Department: m.department, Description: m.description, Occurred: m.occurredAt, Status: m.status, 'Reported by': m.reportedBy, Resolved: m.resolvedAt || '', 'Downtime (min)': m.resolvedAt ? minutesBetween(m.occurredAt, m.resolvedAt) : '', 'Delay reason': m.delayReason || '', 'Resolution notes': m.resolutionNotes || '' })) }) },
+  { id: 'pm', group: 'Maintenance', title: 'Preventive maintenance schedule', desc: 'Every PM task with its calendar due date, running hours used since the last service and the forecast.',
+    build: (c) => {
+      const iv = machineRunIntervals(c.batches, c.charges);
+      return { 'PM schedule': (c.pmTasks || []).map(t => { const st = pmStatus(t, iv), h = st.hrs; return { Machine: t.machineId, Task: t.taskName, 'Every (days)': t.frequencyDays || '', 'Every (running hours)': t.intervalHours || '', 'Last done': t.lastDoneDate || 'never', 'Next due (calendar)': st.cal.nextDue ? st.cal.nextDue.toISOString().slice(0, 10) : '', 'Hours run since service': h && !h.noData ? Number(h.used.toFixed(1)) : '', 'Hours left': h && !h.noData ? Number(h.remaining.toFixed(1)) : '', '% of interval used': h && !h.noData ? Math.round(h.pct) : '', 'Avg h/day (14 d)': h && !h.noData ? Number(h.rate.toFixed(1)) : '', 'Days left at this pace': h && h.forecastDays != null ? Math.ceil(h.forecastDays) : '', Status: st.overdue ? 'OVERDUE' : st.dueSoon ? 'Due soon' : 'OK', Notes: t.notes || '' }; }) };
+    } },
   { id: 'tooling', group: 'Maintenance', title: 'Tooling register', desc: 'Dies and plugs with meters drawn, wear limit and remaining life.',
     build: (c) => ({ 'Tooling': (c.toolingItems || []).map(d => ({ Type: d.type || 'Die', 'Tool ID': d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit (m)': d.limitMeters, 'Remaining (m)': Math.max(0, d.limitMeters - d.usageMeters), 'Used %': d.limitMeters > 0 ? Math.round((d.usageMeters / d.limitMeters) * 100) : '', Status: d.status === 'Polishing' ? 'Sent for polishing' : d.usageMeters >= d.limitMeters * 0.9 ? 'Needs polish' : 'Active' })) }) },
   { id: 'energy', group: 'Maintenance', title: 'Machine energy', desc: 'Every kWh meter reading entered per machine.',
@@ -3540,8 +3642,18 @@ function printCertificate(batch, ctx) {
   win.document.write(`<h2>Product</h2><table class="kv"><tr><td>Production order</td><td>${esc(batch.productionOrderNo)}</td></tr><tr><td>Batch code</td><td>${esc(batch.batchCode)}</td></tr><tr><td>Size</td><td>${esc(batch.spec)}</td></tr><tr><td>Route</td><td>${esc(batch.route)}${batch.routeMachine ? ' · ' + esc(batch.routeMachine) : ''}</td></tr><tr><td>Quantity</td><td>${esc(fmtQty(batchNetQty(batch), batch.unit))}</td></tr>${order ? `<tr><td>Customer / order</td><td>${esc(order.customer)} · ${esc(orderLabel(order))}</td></tr>` : ''}</table>`);
   win.document.write(`<h2>Traceability</h2><table class="kv"><tr><td>Heat / furnace</td><td>${esc(heat?.furnace)} · ${esc(heat?.date)}</td></tr><tr><td>Shell</td><td>${esc(batch.shellNo)}</td></tr><tr><td>Basket</td><td>${esc(batch.basketNo || batch.flow?.machine?.basketNo)}</td></tr><tr><td>Annealing</td><td>${an ? `Pot ${esc(an.potNo)} · charge ${esc(an.chargeNo)}${an.potOutAt ? ' · out ' + esc(formatDateTime(an.potOutAt)) : ''}` : 'Not applicable'}</td></tr><tr><td>Packed</td><td>${pk?.packedAt ? esc(fmtQty(pk.packedQty, batch.unit)) + ' · ' + esc(formatDateTime(pk.packedAt)) : '—'}</td></tr></table>`);
   win.document.write(`<h2>Dimensional results (latest at each stage)</h2>${rows ? `<table><tr><th>Stage</th><th>OD target ± tol (mm)</th><th>OD actual</th><th>OD</th><th>Thk target ± tol (mm)</th><th>Thk actual</th><th>Thk</th></tr>${rows}</table>` : '<div>No measurements recorded.</div>'}`);
+  const chemRec = latestLab(ctx.labResults, 'chemistry', r => r.heatId && r.heatId === batch.heatId);
+  const mechRec = latestLab(ctx.labResults, 'mechanical', r => r.batchId === batch.id);
+  const missing = [];
+  if (chemRec) {
+    const keys = LAB_ELEMENTS.filter(k => chemRec.elements?.[k] != null);
+    win.document.write(`<h2>Chemical composition — Spectro analysis (weight %)</h2><table><tr>${keys.map(k => `<th>${k}</th>`).join('')}</tr><tr>${keys.map(k => `<td>${esc(chemRec.elements[k])}</td>`).join('')}</tr></table><div class="note" style="margin-top:6px">Heat ${esc(heat?.code || heat?.furnace)} · sample ${esc(chemRec.sampleNo || '—')} · tested ${esc(chemRec.testedOn)} by ${esc(chemRec.testedBy)}</div>`);
+  } else missing.push('chemical analysis (enter it in Lab & Mechanical, against this heat)');
+  if (mechRec) {
+    win.document.write(`<h2>Mechanical properties</h2><table><tr><th>Tensile strength</th><th>Yield strength</th><th>Elongation</th><th>Hardness</th></tr><tr><td>${esc(mechRec.tensile)} MPa</td><td>${esc(mechRec.yieldMPa)} MPa</td><td>${esc(mechRec.elongation)} %</td><td>${esc(mechRec.hardness)} ${esc(mechRec.scale)}</td></tr></table><div class="note" style="margin-top:6px">Lot ${esc(q?.lotNo)} · tested ${esc(mechRec.testedOn)} by ${esc(mechRec.testedBy)}</div>`);
+  } else missing.push('mechanical tests (enter them in Lab & Mechanical, against this inspection lot)');
   win.document.write(`<h2>Quality release</h2><table class="kv"><tr><td>Decision</td><td>${esc(q?.status)}</td></tr><tr><td>Inspection lot</td><td>${esc(q?.lotNo)}</td></tr><tr><td>Released by</td><td>${esc(q?.releasedBy || q?.holdBy)}</td></tr><tr><td>Remark</td><td>${esc(q?.note)}</td></tr></table>`);
-  win.document.write(`<div class="note">Chemical composition and mechanical test values are not recorded in this system and are not shown on this certificate.</div></body></html>`);
+  win.document.write(missing.length ? `<div class="note" style="color:#b00020;font-weight:600">Incomplete certificate — not yet entered: ${missing.map(esc).join('; ')}.</div></body></html>` : `</body></html>`);
   win.document.close(); win.focus(); setTimeout(() => { win.print(); }, 250);
   return true;
 }
@@ -3587,7 +3699,7 @@ function ReportsTab({ user }) {
       ))}
       <Card>
         <h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600, margin: '0 0 4px' }}>Inspection / test certificate</h3>
-        <p style={{ fontSize: 12, color: C.subtext, margin: '0 0 10px' }}>Prints a certificate for one production order: traceability, dimensional results and the quality release. Chemistry and mechanical tests are not recorded in the app, so they are not on it.</p>
+        <p style={{ fontSize: 12, color: C.subtext, margin: '0 0 10px' }}>Prints a certificate for one production order: traceability, Spectro chemistry (from its heat), mechanical tests (from its inspection lot), dimensional results and the quality release. Enter the lab data in the Lab & Mechanical tab first; anything missing is flagged on the certificate.</p>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <select aria-label="Certificate batch" value={certId} onChange={e => setCertId(e.target.value)} style={{ ...inp, maxWidth: 340 }}>
             <option value="">— choose a production order —</option>
@@ -3723,11 +3835,11 @@ function RejectParetoWidget({ batches }) {
 }
 
 // Replaces the old hard-coded "predictions": every line below is calculated from data actually recorded in the app.
-function PredictiveIntelligence() {
+function PredictiveIntelligence({ setTab, onShowWidget, activeWidgets = [] }) {
   const c = useContext(ReportCtx) || {};
   const insights = [];
   (c.toolingItems || []).filter(d => d.status !== 'Polishing' && d.limitMeters > 0 && d.usageMeters >= d.limitMeters * 0.9).forEach(d =>
-    insights.push({ type: 'Tooling', text: `${d.type || 'Die'} ${d.id} (${d.size}) has drawn ${d.usageMeters.toLocaleString()} m of its ${d.limitMeters.toLocaleString()} m limit (${Math.round((d.usageMeters / d.limitMeters) * 100)}%).`, action: 'Plan polishing' }));
+    insights.push({ type: 'Tooling', text: `${d.type || 'Die'} ${d.id} (${d.size}) has drawn ${d.usageMeters.toLocaleString()} m of its ${d.limitMeters.toLocaleString()} m limit (${Math.round((d.usageMeters / d.limitMeters) * 100)}%).`, action: 'Plan polishing', tab: 'tooling' }));
   const since = Date.now() - 30 * 86400000, byStage = {};
   (c.batches || []).forEach(b => (b.passMeasurements || []).forEach(m => {
     if (new Date(m.at).getTime() < since) return;
@@ -3736,18 +3848,25 @@ function PredictiveIntelligence() {
   Object.entries(byStage).filter(([, e]) => e.n >= 5 && e.out / e.n >= 0.1).forEach(([st, e]) =>
     insights.push({ type: 'Quality', text: `${st}: ${e.out} of ${e.n} passes in the last 30 days were out of tolerance (${Math.round((e.out / e.n) * 100)}%).`, action: 'Open SPC', tab: 'spc' }));
   const top = computeRejectReasons(c.batches, todayKey().slice(0, 7))[0];
-  if (top && top.kg > 0) insights.push({ type: 'Loss', text: `Biggest loss this month: "${top.reason}" — ${top.kg.toFixed(1)} kg (${top.pct.toFixed(0)}% of all rejects and scrap).`, action: 'See Reject Pareto' });
+  if (top && top.kg > 0) insights.push({ type: 'Loss', text: `Biggest loss this month: "${top.reason}" — ${top.kg.toFixed(1)} kg (${top.pct.toFixed(0)}% of all rejects and scrap).`, action: 'See Reject Pareto', widget: 'Reject Pareto' });
   const low = (c.rawItems || []).filter(r => Number(r.qty) <= Number(r.reorderLevel));
   if (low.length) insights.push({ type: 'Supply', text: `${low.length} raw material${low.length > 1 ? 's are' : ' is'} at or below the reorder level: ${low.slice(0, 3).map(r => r.name).join(', ')}${low.length > 3 ? '…' : ''}.`, action: 'Open Inventory', tab: 'inventory' });
   return (
     <Card style={{ borderLeft: `4px solid ${C.copper}` }}>
-      <SectionTitle sub="Calculated from your logged data — nothing here is estimated by a model.">Plant Insights</SectionTitle>
+      <SectionTitle sub="Calculated from your logged data — identifies bottlenecks and guides you to the right screen.">Plant Insights</SectionTitle>
       {insights.length === 0 ? <EmptyState title="Nothing needs attention." sub="Tooling, quality, losses and stock are all within limits." /> : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
           {insights.map((i, idx) => (
             <div key={idx} style={{ padding: 12, background: C.panelAlt, borderRadius: 8, border: `1px solid ${C.borderSoft}` }}>
               <div style={{ fontSize: 11, fontWeight: 800, color: C.copperDark, textTransform: 'uppercase', marginBottom: 6 }}>{i.type}</div>
               <p style={{ margin: 0, fontSize: 13, color: C.ink, lineHeight: 1.55 }}>{i.text}</p>
+              {i.action && ((i.tab && setTab) || (i.widget && onShowWidget && !activeWidgets.includes(i.widget))) && (
+                <div style={{ marginTop: 10 }}>
+                  <Button variant="secondary" onClick={() => (i.tab ? setTab(i.tab) : onShowWidget(i.widget))} style={{ padding: '6px 12px', fontSize: 12 }}>
+                    {i.action} &rarr;
+                  </Button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -3777,6 +3896,619 @@ function EnergySummaryWidget({ energyLogs, batches, onOpen }) {
   );
 }
 
+/* =========================================================================
+   LAB & MECHANICAL  — Spectro chemistry per melting heat, physical tests per inspection lot.
+   Results feed the Inspection / Test Certificate automatically.
+   ========================================================================= */
+const LAB_ELEMENTS = ['Cu', 'P', 'Ag', 'Pb', 'Fe', 'Zn', 'Ni', 'Sn', 'Mn', 'Sb', 'As', 'Bi'];   // wt %; Cu is the main element, P the deoxidiser, the rest are impurities
+const HARDNESS_SCALES = ['HV', 'HRB', 'HRF'];
+const numOrNaN = (v) => (v === '' || v == null ? NaN : Number(v));
+
+function validateChemistry(f) {
+  const e = {};
+  if (!f.heatId) e.heatId = 'Choose the melting heat.';
+  if (!f.testedOn) e.testedOn = 'Enter the test date.';
+  else if (f.testedOn > todayKey()) e.testedOn = 'The test date cannot be in the future.';
+  const els = {};
+  LAB_ELEMENTS.forEach(k => {
+    const raw = (f.elements || {})[k];
+    if (raw === '' || raw == null) { if (k === 'Cu') e.Cu = 'Cu is required.'; return; }
+    const n = numOrNaN(raw);
+    if (!Number.isFinite(n) || n < 0 || n > 100) e[k] = `${k}: enter a percentage between 0 and 100.`;
+    else if (k === 'Cu' && !(n > 0)) e.Cu = 'Cu must be more than 0.';
+    else els[k] = n;
+  });
+  if (!Object.keys(e).length) {
+    const total = Object.values(els).reduce((s, v) => s + v, 0);
+    if (total > 100.5) e.total = `The elements add up to ${total.toFixed(3)} % — more than 100 %. Check the readings.`;
+  }
+  return { errors: e, valid: Object.keys(e).length === 0, clean: { kind: 'chemistry', heatId: f.heatId, sampleNo: String(f.sampleNo || '').trim(), testedOn: f.testedOn, elements: els, remark: String(f.remark || '').trim() } };
+}
+function validateMechanical(f) {
+  const e = {};
+  if (!f.batchId) e.batchId = 'Choose the inspection lot.';
+  if (!f.testedOn) e.testedOn = 'Enter the test date.';
+  else if (f.testedOn > todayKey()) e.testedOn = 'The test date cannot be in the future.';
+  const t = numOrNaN(f.tensile), y = numOrNaN(f.yieldMPa), el = numOrNaN(f.elongation), h = numOrNaN(f.hardness);
+  if (!(t > 0) || t > 2000) e.tensile = 'Tensile strength (MPa): enter a value between 0 and 2000.';
+  if (!(y > 0)) e.yieldMPa = 'Yield strength (MPa): enter a value more than 0.';
+  else if (t > 0 && y > t) e.yieldMPa = 'Yield strength cannot be higher than tensile strength.';
+  if (!Number.isFinite(el) || el < 0 || el > 100) e.elongation = 'Elongation (%): enter a value between 0 and 100.';
+  if (!(h > 0)) e.hardness = 'Hardness: enter a value more than 0.';
+  if (!HARDNESS_SCALES.includes(f.scale)) e.scale = 'Choose the hardness scale.';
+  return { errors: e, valid: Object.keys(e).length === 0, clean: { kind: 'mechanical', batchId: f.batchId, testedOn: f.testedOn, tensile: t, yieldMPa: y, elongation: el, hardness: h, scale: f.scale, remark: String(f.remark || '').trim() } };
+}
+// newest result of a kind that matches (by test date, then entry time)
+function latestLab(list, kind, pred) {
+  return (list || []).filter(r => r.kind === kind && pred(r)).sort((a, b) => String(b.testedOn || '').localeCompare(String(a.testedOn || '')) || String(b.at || '').localeCompare(String(a.at || '')))[0] || null;
+}
+
+function LabTab({ heats, batches, labResults, onAdd, onDelete, user }) {
+  const canEnter = canDo(user?.role, 'lab.enter');
+  const [mode, setMode] = useState('chem');
+  const blankChem = () => ({ heatId: '', sampleNo: '', testedOn: todayKey(), elements: {}, remark: '' });
+  const blankMech = () => ({ batchId: '', testedOn: todayKey(), tensile: '', yieldMPa: '', elongation: '', hardness: '', scale: 'HV', remark: '' });
+  const [chem, setChem] = useState(blankChem);
+  const [mech, setMech] = useState(blankMech);
+  const [errs, setErrs] = useState({});
+  const [msg, setMsg] = useState('');
+  const heatList = [...(heats || [])].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  const heatLabel = (h) => `${h.code || h.furnace || h.id}${h.date ? ` · ${h.date}` : ''}`;
+  const lots = (batches || []).filter(b => b.flow?.quality?.lotNo).sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
+  const lotLabel = (b) => `${b.flow.quality.lotNo} · ${b.productionOrderNo || b.batchCode} · ${b.spec || ''}`;
+  const inp = { padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13.5, boxSizing: 'border-box', width: '100%' };
+  const lab = { fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4, fontWeight: 500 };
+
+  const save = () => {
+    const v = mode === 'chem' ? validateChemistry(chem) : validateMechanical(mech);
+    setErrs(v.errors); setMsg('');
+    if (!v.valid) return;
+    const r = onAdd(v.clean);
+    if (r?.error) { setErrs({ form: r.error }); return; }
+    setMsg(mode === 'chem' ? 'Chemical analysis saved.' : 'Mechanical results saved.');
+    if (mode === 'chem') setChem(blankChem()); else setMech(blankMech());
+    setTimeout(() => setMsg(''), 4000);
+  };
+  const chemRows = (labResults || []).filter(r => r.kind === 'chemistry').sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+  const mechRows = (labResults || []).filter(r => r.kind === 'mechanical').sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+  const heatOf = (id) => (heats || []).find(h => h.id === id);
+  const batchOf = (id) => (batches || []).find(b => b.id === id);
+  const errList = Object.values(errs);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <SectionTitle sub="Spectro chemistry against melting heats; tensile, yield, elongation and hardness against final inspection lots. Results print on the test certificate automatically.">Lab & Mechanical</SectionTitle>
+        <ReportButton id="lab" />
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        {[['chem', 'Chemical analysis (per heat)'], ['mech', 'Mechanical tests (per lot)']].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => { setMode(k); setErrs({}); setMsg(''); }} style={{ padding: '7px 14px', borderRadius: 999, fontSize: 13, cursor: 'pointer', border: `1px solid ${mode === k ? C.copper : C.border}`, background: mode === k ? C.copperFaint : C.panel, color: mode === k ? C.copperDark : C.subtext, fontWeight: 600 }}>{l}</button>
+        ))}
+      </div>
+
+      {canEnter ? (
+        <Card style={{ marginBottom: 16 }}>
+          {mode === 'chem' ? (
+            <div data-testid="lab-chem-form" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+                <label style={lab}>Melting heat
+                  <select aria-label="Melting heat" value={chem.heatId} onChange={e => setChem({ ...chem, heatId: e.target.value })} style={inp}>
+                    <option value="">— choose a heat —</option>{heatList.map(h => <option key={h.id} value={h.id}>{heatLabel(h)}</option>)}
+                  </select>
+                </label>
+                <label style={lab}>Sample no. (optional)<input aria-label="Sample no" value={chem.sampleNo} onChange={e => setChem({ ...chem, sampleNo: e.target.value })} style={inp} /></label>
+                <label style={lab}>Test date<input aria-label="Chemistry test date" type="date" value={chem.testedOn} max={todayKey()} onChange={e => setChem({ ...chem, testedOn: e.target.value })} style={inp} /></label>
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.copperDark, textTransform: 'uppercase' }}>Spectro result (weight %)</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
+                {LAB_ELEMENTS.map(k => (
+                  <label key={k} style={lab}>{k}{k === 'Cu' && <span style={{ color: C.red }}> *</span>}
+                    <input aria-label={`${k} %`} type="number" step="0.0001" min="0" max="100" value={chem.elements[k] ?? ''} onChange={e => setChem({ ...chem, elements: { ...chem.elements, [k]: e.target.value } })} style={{ ...inp, fontFamily: "'JetBrains Mono', monospace" }} />
+                  </label>
+                ))}
+              </div>
+              <label style={lab}>Remark (optional)<input aria-label="Chemistry remark" value={chem.remark} onChange={e => setChem({ ...chem, remark: e.target.value })} style={inp} /></label>
+            </div>
+          ) : (
+            <div data-testid="lab-mech-form" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+                <label style={lab}>Inspection lot
+                  <select aria-label="Inspection lot" value={mech.batchId} onChange={e => setMech({ ...mech, batchId: e.target.value })} style={inp}>
+                    <option value="">— choose a lot —</option>{lots.map(b => <option key={b.id} value={b.id}>{lotLabel(b)}</option>)}
+                  </select>
+                </label>
+                <label style={lab}>Test date<input aria-label="Mechanical test date" type="date" value={mech.testedOn} max={todayKey()} onChange={e => setMech({ ...mech, testedOn: e.target.value })} style={inp} /></label>
+              </div>
+              {lots.length === 0 && <p style={{ fontSize: 12.5, color: C.subtext, margin: 0 }}>No inspection lots yet. A lot is created when packed material reaches Quality.</p>}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+                <label style={lab}>Tensile strength (MPa)<input aria-label="Tensile MPa" type="number" min="0" value={mech.tensile} onChange={e => setMech({ ...mech, tensile: e.target.value })} style={inp} /></label>
+                <label style={lab}>Yield strength (MPa)<input aria-label="Yield MPa" type="number" min="0" value={mech.yieldMPa} onChange={e => setMech({ ...mech, yieldMPa: e.target.value })} style={inp} /></label>
+                <label style={lab}>Elongation (%)<input aria-label="Elongation %" type="number" min="0" max="100" value={mech.elongation} onChange={e => setMech({ ...mech, elongation: e.target.value })} style={inp} /></label>
+                <label style={lab}>Hardness
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input aria-label="Hardness" type="number" min="0" value={mech.hardness} onChange={e => setMech({ ...mech, hardness: e.target.value })} style={inp} />
+                    <select aria-label="Hardness scale" value={mech.scale} onChange={e => setMech({ ...mech, scale: e.target.value })} style={{ ...inp, width: 84 }}>{HARDNESS_SCALES.map(s => <option key={s}>{s}</option>)}</select>
+                  </div>
+                </label>
+              </div>
+              <label style={lab}>Remark (optional)<input aria-label="Mechanical remark" value={mech.remark} onChange={e => setMech({ ...mech, remark: e.target.value })} style={inp} /></label>
+            </div>
+          )}
+          {errList.length > 0 && <div role="alert" data-testid="lab-errors" style={{ marginTop: 12, color: C.red, fontSize: 12.5 }}>{errList.map((m, i) => <div key={i}>• {m}</div>)}</div>}
+          <div style={{ marginTop: 14, display: 'flex', gap: 12, alignItems: 'center' }}>
+            <Button onClick={save}>{mode === 'chem' ? 'Save chemical analysis' : 'Save mechanical results'}</Button>
+            {msg && <span role="status" style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>{msg}</span>}
+          </div>
+        </Card>
+      ) : (
+        <Card style={{ marginBottom: 16 }}><p style={{ margin: 0, fontSize: 13, color: C.subtext }}>You can view lab results. Only the Quality team (and the Admin) can enter them.</p></Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          {mode === 'chem' ? (
+            chemRows.length === 0 ? <EmptyState title="No chemical analyses yet." sub="Enter the Spectro result for a heat above." /> : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 760 }}>
+                <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Heat', 'Sample', 'Tested', 'Cu %', 'P %', 'Other elements', 'By', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+                <tbody>{chemRows.map(r => { const h = heatOf(r.heatId); const others = Object.entries(r.elements || {}).filter(([k]) => k !== 'Cu' && k !== 'P'); return (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <td style={{ padding: '8px 14px', fontWeight: 600 }}>{h ? heatLabel(h) : '—'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.sampleNo || '—'}</td>
+                    <td style={{ padding: '8px 14px' }}>{r.testedOn}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.elements?.Cu ?? '—'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.elements?.P ?? '—'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', color: C.subtext }}>{others.length ? others.map(([k, v]) => `${k} ${v}`).join(' · ') : '—'}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{r.testedBy}</td>
+                    <td style={{ padding: '8px 14px' }}>{user?.role === 'Admin' && <Button variant="danger" icon={Trash2} onClick={() => { if (window.confirm('Delete this chemical analysis?')) onDelete(r.id); }} />}</td>
+                  </tr>); })}</tbody>
+              </table>)
+          ) : (
+            mechRows.length === 0 ? <EmptyState title="No mechanical tests yet." sub="Enter tensile, yield, elongation and hardness for an inspection lot above." /> : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 760 }}>
+                <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Lot', 'Production order', 'Size', 'Tensile', 'Yield', 'Elong.', 'Hardness', 'Tested', 'By', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+                <tbody>{mechRows.map(r => { const b = batchOf(r.batchId); return (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <td className="font-mono" style={{ padding: '8px 14px', fontWeight: 600 }}>{b?.flow?.quality?.lotNo || '—'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{b?.productionOrderNo || b?.batchCode || '—'}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{b?.spec || '—'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.tensile} MPa</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.yieldMPa} MPa</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.elongation} %</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{r.hardness} {r.scale}</td>
+                    <td style={{ padding: '8px 14px' }}>{r.testedOn}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{r.testedBy}</td>
+                    <td style={{ padding: '8px 14px' }}>{user?.role === 'Admin' && <Button variant="danger" icon={Trash2} onClick={() => { if (window.confirm('Delete these mechanical results?')) onDelete(r.id); }} />}</td>
+                  </tr>); })}</tbody>
+              </table>)
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* =========================================================================
+   ACTIVITY-BASED BATCH COSTING
+   Per production order: the machine hours it actually used (run start -> finish from the shop floor,
+   plus its share of the annealing pot cycle) x the plant conversion rate, plus the copper it consumed.
+   ========================================================================= */
+function computeBatchCosting({ batches, charges, settings, month }) {
+  const cuPerMT = Number(settings?.copperCostPerMT) || 0, ratePerHr = Number(settings?.conversionCostPerHour) || 0;
+  const defPrice = Number(settings?.sellPricePerMT) || 0, prices = settings?.orderSellPrices || {};
+  const rows = [];
+  (batches || []).forEach(b => {
+    const m = b.flow?.machine;
+    if (!m?.startedAt || !m?.endedAt) return;
+    if (month && isoToLocalKey(m.endedAt).slice(0, 7) !== month) return;
+    const c = m.coils;
+    const scrapKg = (b.scrapLog || []).reduce((s, r) => s + (Number(r.qty) || 0), 0);
+    const qtyKg = (toMT(b.qty, b.unit) || 0) * 1000;
+    const inputKg = Number(c?.inputKg) > 0 ? Number(c.inputKg) : qtyKg;
+    const goodKg = c ? (Number(c.acceptedKg) || 0) : Math.max(0, inputKg - scrapKg);
+    const machineHrs = Math.max(0, (new Date(m.endedAt) - new Date(m.startedAt)) / 3600000);
+    let annealHrs = 0;
+    const a = b.flow?.annealing;
+    if (a?.potInAt && a?.potOutAt) {
+      const potHrs = Math.max(0, (new Date(a.potOutAt) - new Date(a.potInAt)) / 3600000);
+      const ch = (charges || []).find(x => x.chargeNo === a.chargeNo);
+      const potTotal = ch ? potKg(ch.items) : 0;
+      const mine = ch ? (ch.items || []).find(i => i.batchCode === b.batchCode || (i.productionOrderNo && i.productionOrderNo === b.productionOrderNo)) : null;
+      const kgIn = mine ? Number(mine.qty) || 0 : goodKg;
+      annealHrs = potTotal > 0 ? potHrs * Math.min(1, kgIn / potTotal) : potHrs;   // the pot is shared: each order carries its kg share of the cycle
+    }
+    const hours = machineHrs + annealHrs;
+    const material = (inputKg / 1000) * cuPerMT, conversion = hours * ratePerHr, total = material + conversion;
+    const priceKey = b.orderId || b.id;
+    const price = Number(prices[priceKey]) > 0 ? Number(prices[priceKey]) : defPrice;
+    const revenue = price > 0 ? (goodKg / 1000) * price : null;
+    rows.push({ id: b.id, priceKey, order: b.productionOrderNo || b.batchCode, spec: b.spec || '', route: b.route || '', machine: m.machine || b.routeMachine || '',
+      machineHrs, annealHrs, hours, inputKg, goodKg, lossKg: Math.max(0, inputKg - goodKg), material, conversion, total,
+      costPerKg: goodKg > 0 ? total / goodKg : null, price, usesDefault: !(Number(prices[priceKey]) > 0), revenue,
+      margin: revenue != null ? revenue - total : null, marginPct: revenue > 0 ? ((revenue - total) / revenue) * 100 : null });
+  });
+  rows.sort((x, y) => String(x.order).localeCompare(String(y.order)));
+  const sum = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
+  const withRev = rows.filter(r => r.revenue != null);
+  const totals = { hours: sum('hours'), inputKg: sum('inputKg'), goodKg: sum('goodKg'), material: sum('material'), conversion: sum('conversion'), total: sum('total'), revenue: withRev.reduce((s, r) => s + r.revenue, 0), margin: withRev.reduce((s, r) => s + r.margin, 0), pricedOrders: withRev.length };
+  return { rows, totals, cuPerMT, ratePerHr, defPrice };
+}
+
+function BatchCostingCard({ batches, charges, settings, month, onUpdateSettings, canEdit }) {
+  const { rows, totals, cuPerMT, ratePerHr, defPrice } = computeBatchCosting({ batches, charges, settings, month });
+  const prices = settings?.orderSellPrices || {};
+  const money = (v) => (v == null ? '—' : `₹${Math.round(v).toLocaleString('en-IN')}`);
+  const inp = { padding: '6px 8px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12.5, width: 100, boxSizing: 'border-box' };
+  const setPrice = (key, raw) => {
+    if (!onUpdateSettings) return;
+    const next = { ...prices }; const n = Number(raw);
+    if (raw === '' || !(n > 0)) delete next[key]; else next[key] = n;
+    onUpdateSettings({ orderSellPrices: next });
+  };
+  return (
+    <Card data-testid="batch-costing" style={{ marginTop: 18, borderLeft: `4px solid ${C.copper}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+        <SectionTitle sub={`Each order carries the machine hours it really used, not a plant-wide average. Runs finished in ${month}.`}>Batch costing (activity-based)</SectionTitle>
+        <ExportButton label="Export batch costing" onExport={() => exportToExcel(`neelsuite-batch-costing-${month}.xlsx`, { 'Batch costing': rows.map(r => ({ 'Production order': r.order, Size: r.spec, Route: r.route, Machine: r.machine, 'Machine hours': Number(r.machineHrs.toFixed(2)), 'Annealing hours (share)': Number(r.annealHrs.toFixed(2)), 'Total hours': Number(r.hours.toFixed(2)), 'Input kg': Math.round(r.inputKg), 'Good kg': Math.round(r.goodKg), 'Lost kg': Math.round(r.lossKg), 'Copper cost (₹)': Math.round(r.material), 'Conversion cost (₹)': Math.round(r.conversion), 'Total cost (₹)': Math.round(r.total), 'Cost per good kg (₹)': r.costPerKg == null ? '' : Number(r.costPerKg.toFixed(2)), 'Selling price (₹/MT)': r.price || '', 'Revenue (₹)': r.revenue == null ? '' : Math.round(r.revenue), 'Margin (₹)': r.margin == null ? '' : Math.round(r.margin), 'Margin %': r.marginPct == null ? '' : Number(r.marginPct.toFixed(1)) })) })} />
+      </div>
+      <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 12.5, color: C.subtext, marginBottom: 10, alignItems: 'center' }}>
+        <span>Copper cost: <strong className="font-mono">{cuPerMT ? `₹${cuPerMT.toLocaleString('en-IN')}/MT` : 'not set'}</strong></span>
+        <span>Conversion: <strong className="font-mono">{ratePerHr ? `₹${ratePerHr.toLocaleString('en-IN')}/hour` : 'not set'}</strong></span>
+        <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>Default selling price (₹/MT)
+          <input aria-label="Default selling price" type="number" min="0" defaultValue={defPrice || ''} disabled={!canEdit} onBlur={e => onUpdateSettings && onUpdateSettings({ sellPricePerMT: Number(e.target.value) || 0 })} style={inp} />
+        </label>
+      </div>
+      {(!cuPerMT || !ratePerHr) && <p role="alert" style={{ fontSize: 12.5, color: C.amber, margin: '0 0 10px' }}>Set the copper cost and the conversion cost per hour (Trends tab) to get full costs.</p>}
+      {rows.length === 0 ? <EmptyState title="No finished machine runs this month." sub="An order appears once its LWC / PCC / CTL machine run has a start and a finish time." /> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 1000 }}>
+            <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Order', 'Size / machine', 'Hours', 'In kg', 'Good kg', 'Copper', 'Conversion', 'Total', '₹ / good kg', 'Sell ₹/MT', 'Margin'].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id} data-testid={`costrow-${r.order}`} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 600 }}>{r.order}</td>
+                  <td style={{ padding: '8px 12px', color: C.subtext }}>{r.spec}<div style={{ fontSize: 11 }}>{r.route}{r.machine ? ` · ${r.machine}` : ''}</div></td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }} title={`Machine ${r.machineHrs.toFixed(2)} h + annealing share ${r.annealHrs.toFixed(2)} h`}>{r.hours.toFixed(2)}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{Math.round(r.inputKg).toLocaleString()}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{Math.round(r.goodKg).toLocaleString()}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{money(r.material)}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{money(r.conversion)}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700 }}>{money(r.total)}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{r.costPerKg == null ? '—' : `₹${r.costPerKg.toFixed(1)}`}</td>
+                  <td style={{ padding: '8px 12px' }}><input aria-label={`Selling price ${r.order}`} type="number" min="0" disabled={!canEdit} defaultValue={prices[r.priceKey] || ''} placeholder={defPrice ? String(defPrice) : '₹/MT'} onBlur={e => setPrice(r.priceKey, e.target.value)} style={inp} /></td>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: r.margin == null ? C.faint : r.margin >= 0 ? C.green : C.red }}>{r.margin == null ? '—' : `${money(r.margin)} (${r.marginPct.toFixed(1)}%)`}</td>
+                </tr>
+              ))}
+              <tr style={{ borderTop: `2px solid ${C.border}`, background: C.panelAlt, fontWeight: 700 }}>
+                <td colSpan={2} style={{ padding: '8px 12px' }}>Total · {rows.length} order{rows.length === 1 ? '' : 's'}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{totals.hours.toFixed(1)}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{Math.round(totals.inputKg).toLocaleString()}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{Math.round(totals.goodKg).toLocaleString()}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{money(totals.material)}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{money(totals.conversion)}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{money(totals.total)}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{totals.goodKg > 0 ? `₹${(totals.total / totals.goodKg).toFixed(1)}` : '—'}</td>
+                <td style={{ padding: '8px 12px' }} />
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{totals.pricedOrders ? `${money(totals.margin)}` : '—'}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p style={{ fontSize: 11.5, color: C.subtext, margin: '10px 0 0' }}>Hours = machine run (start to finish on the shop floor) + the order's kg share of its annealing pot cycle. Melting, rolling and cascade are not timed per order in the app, so they are not in the hours; the copper cost covers all input material including what was rejected. Margin shows only for orders with a selling price (own price, or the default above).</p>
+    </Card>
+  );
+}
+
+/* =========================================================================
+   BARCODE CYCLE COUNTING  (inventory auditing)
+   1. Print Code 39 labels for every raw-material and finished-goods row.
+   2. Count: scan a label (USB / Bluetooth scanner, or the phone camera), type what you counted.
+      The count is BLIND for the counter: the system quantity is not shown.
+   3. Review: a manager sees system vs counted, and approves (posts a 701 / 702 inventory-difference
+      material document) or sends the line back for a recount. The counter cannot approve their own count.
+   ========================================================================= */
+const CODE39 = {
+  '0': 'nnnwwnwnn', '1': 'wnnwnnnnw', '2': 'nnwwnnnnw', '3': 'wnwwnnnnn', '4': 'nnnwwnnnw', '5': 'wnnwwnnnn', '6': 'nnwwwnnnn', '7': 'nnnwnnwnw', '8': 'wnnwnnwnn', '9': 'nnwwnnwnn',
+  A: 'wnnnnwnnw', B: 'nnwnnwnnw', C: 'wnwnnwnnn', D: 'nnnnwwnnw', E: 'wnnnwwnnn', F: 'nnwnwwnnn', G: 'nnnnnwwnw', H: 'wnnnnwwnn', I: 'nnwnnwwnn', J: 'nnnnwwwnn',
+  K: 'wnnnnnnww', L: 'nnwnnnnww', M: 'wnwnnnnwn', N: 'nnnnwnnww', O: 'wnnnwnnwn', P: 'nnwnwnnwn', Q: 'nnnnnnwww', R: 'wnnnnnwwn', S: 'nnwnnnwwn', T: 'nnnnwnwwn',
+  U: 'wwnnnnnnw', V: 'nwwnnnnnw', W: 'wwwnnnnnn', X: 'nwnnwnnnw', Y: 'wwnnwnnnn', Z: 'nwwnwnnnn', '-': 'nwnnnnwnw', '.': 'wwnnnnwnn', ' ': 'nwwnnnwnn', '*': 'nwnnwnwnn',
+};
+// bars for a Code 39 barcode: [{x, w}] in module units (narrow = 1, wide = 3), plus the total width
+function code39Bars(text) {
+  const t = `*${String(text || '').toUpperCase()}*`;
+  const bars = []; let x = 0;
+  for (let c = 0; c < t.length; c++) {
+    const pat = CODE39[t[c]];
+    if (!pat) return null;                                  // a character Code 39 cannot carry
+    for (let i = 0; i < 9; i++) {
+      const w = pat[i] === 'w' ? 3 : 1;
+      if (i % 2 === 0) bars.push({ x, w });                 // even positions are bars, odd are spaces
+      x += w;
+    }
+    if (c < t.length - 1) x += 1;                           // gap between characters
+  }
+  return { bars, width: x };
+}
+function Code39({ value, height = 46, module: m = 1.6 }) {
+  const b = code39Bars(value);
+  if (!b) return <span style={{ color: C.red, fontSize: 11 }}>Cannot encode</span>;
+  const quiet = 10;
+  return (
+    <svg role="img" aria-label={`Barcode ${value}`} width={(b.width + quiet * 2) * m} height={height} viewBox={`0 0 ${b.width + quiet * 2} ${height}`} preserveAspectRatio="none" style={{ background: '#fff', maxWidth: '100%' }}>
+      {b.bars.map((r, i) => <rect key={i} x={r.x + quiet} y="0" width={r.w} height={height} fill="#000" />)}
+    </svg>
+  );
+}
+function code39SvgString(value, height = 46, m = 1.6) {
+  const b = code39Bars(value); if (!b) return '';
+  const q = 10;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${(b.width + q * 2) * m}" height="${height}" viewBox="0 0 ${b.width + q * 2} ${height}" preserveAspectRatio="none">${b.bars.map(r => `<rect x="${r.x + q}" y="0" width="${r.w}" height="${height}"/>`).join('')}</svg>`;
+}
+
+// ---- identification: a stable code per stock row, no extra data to maintain ----
+function stockBarcode(type, item) { return (type === 'raw' ? 'RM-' : 'FG-') + String(item?.id ?? '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function findByBarcode(text, rawItems, finishedItems) {
+  const t = String(text || '').trim().toUpperCase().replace(/^\*+|\*+$/g, '');
+  if (!t) return null;
+  const r = (rawItems || []).find(x => stockBarcode('raw', x) === t); if (r) return { type: 'raw', item: r };
+  const f = (finishedItems || []).find(x => stockBarcode('finished', x) === t); if (f) return { type: 'finished', item: f };
+  return null;
+}
+function countItemLabel(type, item) { return type === 'raw' ? String(item?.name || '') : `${item?.category || 'Finished'} · ${item?.spec || ''}`; }
+function countVariance(line) {
+  const qty = round3(Number(line.countedQty) - Number(line.expectedQty));
+  const exp = Number(line.expectedQty);
+  const pct = exp > 0 ? (qty / exp) * 100 : (Number(line.countedQty) > 0 ? 100 : 0);
+  const alt = line.countedAlt == null ? null : Number(line.countedAlt) - Number(line.expectedAlt || 0);
+  return { qty, pct, alt };
+}
+function validateCountEntry(type, qtyText, altText) {
+  const e = {};
+  const q = qtyText === '' || qtyText == null ? NaN : Number(qtyText);
+  if (!Number.isFinite(q) || q < 0) e.qty = 'Enter the quantity you counted (0 if none).';
+  else if (q > 10000000) e.qty = 'That quantity looks too large — check it.';
+  let alt = null;
+  if (type === 'finished' && altText !== '' && altText != null) {
+    const a = Number(altText);
+    if (!Number.isFinite(a) || a < 0 || !Number.isInteger(a)) e.alt = 'Pallets / boxes must be a whole number (0 or more).'; else alt = a;
+  }
+  return { errors: e, valid: Object.keys(e).length === 0, qty: q, alt };
+}
+function makeCountLine(type, item, qty, alt, note, by) {
+  return { key: `${type}:${item.id}`, itemType: type, itemId: item.id, barcode: stockBarcode(type, item), label: countItemLabel(type, item), unit: item.unit || 'kg',
+    expectedQty: Number(item.qty) || 0, countedQty: qty, altUnit: type === 'finished' ? (item.altUnit || fgAltUnit(item.category)) : null, expectedAlt: type === 'finished' ? (Number(item.altQty) || 0) : null, countedAlt: alt,
+    note: String(note || '').trim(), countedBy: by, countedAt: new Date().toISOString(), status: 'counted' };
+}
+function upsertCountLine(session, line) {
+  const lines = session.lines || [], i = lines.findIndex(l => l.key === line.key);
+  return { ...session, lines: i >= 0 ? lines.map((l, n) => (n === i ? line : l)) : [...lines, line] };
+}
+// items a session covers, and how many have been counted
+function countScopeItems(session, rawItems, finishedItems) {
+  const out = [];
+  if (session.scope !== 'Finished goods') (rawItems || []).forEach(i => out.push({ type: 'raw', item: i }));
+  if (session.scope !== 'Raw materials') (finishedItems || []).forEach(i => out.push({ type: 'finished', item: i }));
+  return out;
+}
+function countProgress(session, rawItems, finishedItems) {
+  const scope = countScopeItems(session, rawItems, finishedItems);
+  const done = new Set((session.lines || []).map(l => l.key));
+  const pending = scope.filter(s => !done.has(`${s.type}:${s.item.id}`));
+  return { total: scope.length, counted: scope.length - pending.length, pending };
+}
+// what posting a line does to the stock that is on the shelf NOW (movement since the count is kept)
+function settleCountLine(line, currentItem) {
+  const v = countVariance(line);
+  const curQty = Number(currentItem?.qty) || 0, curAlt = Number(currentItem?.altQty) || 0;
+  const dQty = v.qty, dAlt = v.alt || 0;
+  return { dQty, dAlt, newQty: Math.max(0, round3(curQty + dQty)), newAlt: Math.max(0, curAlt + dAlt), moved: round3(curQty - Number(line.expectedQty)), matched: dQty === 0 && dAlt === 0 };
+}
+
+function printStockLabels(rawItems, finishedItems, scope) {
+  const rows = [];
+  if (scope !== 'Finished goods') (rawItems || []).forEach(i => rows.push({ type: 'raw', item: i }));
+  if (scope !== 'Raw materials') (finishedItems || []).forEach(i => rows.push({ type: 'finished', item: i }));
+  if (!rows.length) return false;
+  const esc = (v) => String(v ?? '').replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  const win = window.open('', '', 'width=900,height=800'); if (!win) return false;
+  win.document.write(`<html><head><title>Stock labels</title><style>body{font-family:Inter,Arial,sans-serif;margin:16px;color:#222}.g{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.l{border:1px solid #999;border-radius:6px;padding:8px;text-align:center;page-break-inside:avoid}.n{font-weight:700;font-size:13px;margin-bottom:2px}.s{font-size:11px;color:#555;margin-bottom:4px}.c{font-family:monospace;font-size:12px;margin-top:2px}svg{max-width:100%;height:46px}@media print{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body><div class="g">`);
+  rows.forEach(({ type, item }) => { const code = stockBarcode(type, item); win.document.write(`<div class="l"><div class="n">${esc(type === 'raw' ? item.name : item.spec)}</div><div class="s">${esc(type === 'raw' ? `Raw material · ${item.unit || ''}` : `${item.category || 'Finished goods'} · ${item.unit || 'kg'}`)}</div>${code39SvgString(code)}<div class="c">${esc(code)}</div></div>`); });
+  win.document.write('</div></body></html>'); win.document.close(); win.focus(); setTimeout(() => win.print(), 300);
+  return true;
+}
+
+function CycleCountTab({ sessions, rawItems, finishedItems, onStart, onSaveLine, onRemoveLine, onSubmit, onDecide, onClose, onCancel, user }) {
+  const canCount = canDo(user?.role, 'stock.count'), canApprove = canDo(user?.role, 'stock.approve');
+  const active = (sessions || []).find(s => s.status === 'Open' || s.status === 'Review') || null;
+  const history = (sessions || []).filter(s => s.status === 'Closed' || s.status === 'Cancelled').sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const [scope, setScope] = useState('All stock'), [tol, setTol] = useState('2'), [note, setNote] = useState('');
+  const [scanText, setScanText] = useState(''), [cur, setCur] = useState(null), [qty, setQty] = useState(''), [alt, setAlt] = useState(''), [lnote, setLnote] = useState('');
+  const [err, setErr] = useState(''), [msg, setMsg] = useState(''), [cam, setCam] = useState(false), [labelScope, setLabelScope] = useState('All stock'), [open, setOpen] = useState(null);
+  const inp = { padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14, boxSizing: 'border-box' };
+  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 3500); };
+
+  const select = (hit) => {
+    const key = `${hit.type}:${hit.item.id}`;
+    const prev = (active?.lines || []).find(l => l.key === key);
+    setCur(hit); setErr(''); setQty(prev ? String(prev.countedQty) : ''); setAlt(prev && prev.countedAlt != null ? String(prev.countedAlt) : ''); setLnote(prev?.note || '');
+  };
+  const handleScan = (text) => {
+    const hit = findByBarcode(text, rawItems, finishedItems);
+    setScanText('');
+    if (!hit) { setCur(null); setErr(`No stock item has the barcode "${String(text).trim()}". Print labels from this screen, or check the label.`); return; }
+    if (active && !countScopeItems(active, rawItems, finishedItems).some(s => s.type === hit.type && s.item.id === hit.item.id)) { setCur(null); setErr(`${countItemLabel(hit.type, hit.item)} is outside this count (${active.scope}).`); return; }
+    select(hit);
+  };
+  const scanRef = useRef(handleScan); scanRef.current = handleScan;
+  const onCamScan = useCallback((t) => { setCam(false); scanRef.current(t); }, []);
+
+  const saveLine = () => {
+    if (!cur) return;
+    const v = validateCountEntry(cur.type, qty, alt);
+    if (!v.valid) { setErr(Object.values(v.errors)[0]); return; }
+    const r = onSaveLine(active.id, cur.type, cur.item.id, v.qty, v.alt, lnote);
+    if (r?.error) { setErr(r.error); return; }
+    flash(`Saved: ${countItemLabel(cur.type, cur.item)} — ${fmtNum(v.qty, 3)} ${cur.item.unit || 'kg'}`);
+    setCur(null); setQty(''); setAlt(''); setLnote(''); setErr('');
+  };
+
+  const progress = active ? countProgress(active, rawItems, finishedItems) : null;
+  const lines = active?.lines || [];
+  const pendingDecision = lines.filter(l => l.status === 'counted').length;
+  const stockNow = (l) => (l.itemType === 'raw' ? (rawItems || []) : (finishedItems || [])).find(x => x.id === l.itemId);
+  const fmtVar = (v) => (v > 0 ? `+${fmtNum(v, 3)}` : fmtNum(v, 3));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <SectionTitle sub="Scan a label, count what is on the shelf, and let a second person approve the difference. Approved differences post to inventory as material documents.">Cycle Count</SectionTitle>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select aria-label="Label scope" value={labelScope} onChange={e => setLabelScope(e.target.value)} style={{ ...inp, padding: '6px 8px', fontSize: 13 }}>{['All stock', 'Raw materials', 'Finished goods'].map(o => <option key={o}>{o}</option>)}</select>
+          <Button variant="secondary" icon={Printer} onClick={() => { if (!printStockLabels(rawItems, finishedItems, labelScope)) flash('Nothing to print, or the pop-up was blocked.'); }}>Print barcode labels</Button>
+          <ReportButton id="cyclecount" />
+        </div>
+      </div>
+
+      {msg && <p role="status" style={{ color: C.green, fontSize: 13, fontWeight: 600, margin: '0 0 10px' }}>{msg}</p>}
+
+      {!active && (
+        <Card style={{ marginBottom: 16 }}>
+          <h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600, margin: '0 0 10px' }}>Start a count</h3>
+          {canCount ? (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>What to count
+                <select aria-label="Count scope" value={scope} onChange={e => setScope(e.target.value)} style={inp}>{['All stock', 'Raw materials', 'Finished goods'].map(o => <option key={o}>{o}</option>)}</select></label>
+              <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>Accept differences up to (%)
+                <input aria-label="Tolerance percent" type="number" min="0" step="0.1" value={tol} onChange={e => setTol(e.target.value)} style={{ ...inp, width: 110 }} /></label>
+              <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 200px' }}>Note (optional)
+                <input aria-label="Count note" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Monthly store audit" style={inp} /></label>
+              <Button onClick={() => { const r = onStart({ scope, tolerancePct: Number(tol), note }); if (r?.error) setErr(r.error); else { setErr(''); setNote(''); } }}>Start count</Button>
+            </div>
+          ) : <p style={{ fontSize: 13, color: C.subtext, margin: 0 }}>You can view counts. Store, Supply Chain and Manager roles can run them.</p>}
+          {err && <p role="alert" style={{ color: C.red, fontSize: 12.5, margin: '10px 0 0' }}>{err}</p>}
+        </Card>
+      )}
+
+      {active && (
+        <Card style={{ marginBottom: 16, borderLeft: `4px solid ${active.status === 'Review' ? C.amber : C.copper}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div>
+              <div className="font-mono" style={{ fontWeight: 800, fontSize: 15 }}>{active.no} <Badge tone={active.status === 'Review' ? 'amber' : 'blue'}>{active.status === 'Review' ? 'Awaiting approval' : 'Counting'}</Badge></div>
+              <div style={{ fontSize: 12, color: C.subtext }}>{active.scope} · started {formatDateTime(active.createdAt)} by {active.createdBy} · tolerance {active.tolerancePct}%{active.note ? ` · ${active.note}` : ''}</div>
+            </div>
+            <div data-testid="count-progress" style={{ fontSize: 13 }}><strong>{progress.counted}</strong> of {progress.total} items counted{progress.total > 0 && ` (${Math.round((progress.counted / progress.total) * 100)}%)`}</div>
+          </div>
+
+          {active.status === 'Open' && canCount && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: '1 1 260px' }}>
+                  <ScanLine size={15} style={{ position: 'absolute', left: 10, top: 11, color: C.faint }} />
+                  <input aria-label="Scan barcode" autoFocus value={scanText} onChange={e => setScanText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && scanText.trim()) { e.preventDefault(); handleScan(scanText); } }} placeholder="Scan a label (or type the code and press Enter)" style={{ ...inp, width: '100%', paddingLeft: 32, fontFamily: "'JetBrains Mono', monospace" }} />
+                </div>
+                <Button variant="secondary" onClick={() => setCam(true)}>Use camera</Button>
+              </div>
+              {err && <p role="alert" style={{ color: C.red, fontSize: 12.5, margin: '8px 0 0' }}>{err}</p>}
+              {cur && (
+                <div data-testid="count-entry" style={{ marginTop: 12, padding: 12, background: C.panelAlt, borderRadius: 8, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <div style={{ flex: '1 1 220px' }}><div style={{ fontWeight: 700 }}>{countItemLabel(cur.type, cur.item)}</div><div className="font-mono" style={{ fontSize: 11.5, color: C.subtext }}>{stockBarcode(cur.type, cur.item)}</div></div>
+                  <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>Counted ({cur.item.unit || 'kg'})
+                    <input aria-label="Counted quantity" type="number" min="0" step="any" autoFocus value={qty} onChange={e => setQty(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveLine()} style={{ ...inp, width: 130 }} /></label>
+                  {cur.type === 'finished' && <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>{fgAltUnit(cur.item.category)} counted
+                    <input aria-label="Counted pallets or boxes" type="number" min="0" step="1" value={alt} onChange={e => setAlt(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveLine()} style={{ ...inp, width: 110 }} /></label>}
+                  <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 160px' }}>Note (optional)
+                    <input aria-label="Line note" value={lnote} onChange={e => setLnote(e.target.value)} style={inp} /></label>
+                  <Button onClick={saveLine}>Save count</Button>
+                  <Button variant="secondary" onClick={() => { setCur(null); setErr(''); }}>Cancel</Button>
+                </div>
+              )}
+              <p style={{ fontSize: 11.5, color: C.subtext, margin: '10px 0 0' }}>This is a blind count: the system quantity is not shown while counting. Scan the same label again to correct a count.</p>
+            </div>
+          )}
+
+          {lines.length > 0 && (
+            <div style={{ overflowX: 'auto', marginTop: 14 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: canApprove ? 860 : 520 }}>
+                <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>
+                  {['Item', 'Counted', ...(canApprove ? ['System', 'Difference', 'Stock moved'] : []), 'By', 'Status', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}
+                </tr></thead>
+                <tbody>{lines.map(l => {
+                  const v = countVariance(l), within = Math.abs(v.pct) <= Number(active.tolerancePct), cn = stockNow(l), st = cn ? settleCountLine(l, cn) : null;
+                  const mine = l.countedBy === user?.name && user?.role !== 'Admin';
+                  return (
+                    <tr key={l.key} data-testid={`count-line-${l.barcode}`} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                      <td style={{ padding: '8px 12px', fontWeight: 600 }}>{l.label}<div className="font-mono" style={{ fontSize: 10.5, color: C.faint }}>{l.barcode}</div></td>
+                      <td className="font-mono" style={{ padding: '8px 12px' }}>{fmtNum(l.countedQty, 3)} {l.unit}{l.countedAlt != null && <div style={{ fontSize: 11, color: C.subtext }}>{l.countedAlt} {l.altUnit}</div>}</td>
+                      {canApprove && <>
+                        <td className="font-mono" style={{ padding: '8px 12px', color: C.subtext }}>{fmtNum(l.expectedQty, 3)} {l.unit}{l.expectedAlt != null && <div style={{ fontSize: 11 }}>{l.expectedAlt} {l.altUnit}</div>}</td>
+                        <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: v.qty === 0 && !v.alt ? C.green : within ? C.amber : C.red }}>{fmtVar(v.qty)} {l.unit} ({v.pct > 0 ? '+' : ''}{v.pct.toFixed(1)}%){v.alt ? <div style={{ fontSize: 11 }}>{v.alt > 0 ? '+' : ''}{v.alt} {l.altUnit}</div> : null}</td>
+                        <td className="font-mono" style={{ padding: '8px 12px', color: st && st.moved !== 0 ? C.amber : C.faint }}>{st && st.moved !== 0 ? `${fmtVar(st.moved)} ${l.unit}` : '—'}</td>
+                      </>}
+                      <td style={{ padding: '8px 12px', color: C.subtext }}>{l.countedBy}</td>
+                      <td style={{ padding: '8px 12px' }}><Badge tone={l.status === 'approved' ? 'green' : l.status === 'matched' ? 'green' : l.status === 'recount' ? 'red' : 'default'}>{l.status === 'counted' ? 'Counted' : l.status === 'matched' ? 'Matched' : l.status === 'approved' ? 'Posted' : 'Recount'}</Badge></td>
+                      <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                        {active.status === 'Open' && canCount && l.status !== 'approved' && l.status !== 'matched' && <Button variant="secondary" onClick={() => onRemoveLine(active.id, l.key)}>Remove</Button>}
+                        {active.status === 'Review' && canApprove && l.status === 'counted' && (mine
+                          ? <span style={{ fontSize: 11.5, color: C.subtext }}>Counted by you — another person approves</span>
+                          : <span style={{ display: 'inline-flex', gap: 6 }}><Button onClick={() => { const r = onDecide(active.id, l.key, 'approve'); if (r?.error) setErr(r.error); }}>{v.qty === 0 && !v.alt ? 'Confirm' : 'Approve & post'}</Button><Button variant="secondary" onClick={() => onDecide(active.id, l.key, 'recount')}>Recount</Button></span>)}
+                      </td>
+                    </tr>);
+                })}</tbody>
+              </table>
+            </div>
+          )}
+          {active.status === 'Review' && err && <p role="alert" style={{ color: C.red, fontSize: 12.5, margin: '8px 0 0' }}>{err}</p>}
+
+          {progress.pending.length > 0 && (
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ fontSize: 12.5, color: C.subtext, cursor: 'pointer' }}>{progress.pending.length} item{progress.pending.length === 1 ? '' : 's'} not counted yet</summary>
+              <div style={{ fontSize: 12, color: C.subtext, marginTop: 6, lineHeight: 1.7 }}>{progress.pending.slice(0, 60).map(p => countItemLabel(p.type, p.item)).join(' · ')}{progress.pending.length > 60 ? ' …' : ''}</div>
+            </details>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+            {active.status === 'Open' && canCount && <Button disabled={lines.length === 0} onClick={() => { const r = onSubmit(active.id); if (r?.error) setErr(r.error); }}>Submit for approval</Button>}
+            {active.status === 'Review' && canApprove && pendingDecision === 0 && <Button onClick={() => { const r = onClose(active.id); if (r?.error) setErr(r.error); }}>Close count</Button>}
+            {active.status === 'Review' && canApprove && pendingDecision > 0 && lines.some(l => l.status === 'counted' && Math.abs(countVariance(l).pct) <= Number(active.tolerancePct) && l.countedBy !== user?.name) &&
+              <Button variant="secondary" onClick={() => { lines.filter(l => l.status === 'counted' && Math.abs(countVariance(l).pct) <= Number(active.tolerancePct) && (l.countedBy !== user?.name || user?.role === 'Admin')).forEach(l => onDecide(active.id, l.key, 'approve')); }}>Approve all within {active.tolerancePct}%</Button>}
+            {canApprove && <Button variant="danger" onClick={() => { if (window.confirm(`Cancel count ${active.no}? Nothing will be posted.`)) onCancel(active.id); }}>Cancel count</Button>}
+          </div>
+          {active.status === 'Review' && !canApprove && <p style={{ fontSize: 12.5, color: C.subtext, margin: '10px 0 0' }}>Submitted. A manager or supply-chain approver will review the differences.</p>}
+        </Card>
+      )}
+
+      {cam && <BarcodeScanner onScan={onCamScan} onClose={() => setCam(false)} />}
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.borderSoft}` }}><h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600, margin: 0 }}>Count history</h3></div>
+        {history.length === 0 ? <EmptyState title="No finished counts yet." sub="Closed counts and their differences are kept here." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 640 }}>
+              <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Count', 'Scope', 'Started', 'Counted', 'Posted differences', 'Status', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+              <tbody>{history.map(s => { const posted = (s.lines || []).filter(l => l.status === 'approved'); return (
+                <React.Fragment key={s.id}>
+                  <tr style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <td className="font-mono" style={{ padding: '8px 14px', fontWeight: 700 }}>{s.no}</td>
+                    <td style={{ padding: '8px 14px' }}>{s.scope}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{formatDateTime(s.createdAt)} · {s.createdBy}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{(s.lines || []).length}{s.coveragePct != null ? ` (${s.coveragePct}% of items)` : ''}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px' }}>{posted.length}</td>
+                    <td style={{ padding: '8px 14px' }}><Badge tone={s.status === 'Closed' ? 'green' : 'default'}>{s.status}</Badge></td>
+                    <td style={{ padding: '8px 14px' }}><Button variant="secondary" onClick={() => setOpen(open === s.id ? null : s.id)}>{open === s.id ? 'Hide' : 'Details'}</Button></td>
+                  </tr>
+                  {open === s.id && <tr><td colSpan={7} style={{ padding: '8px 14px 14px', background: C.panelAlt }}>
+                    {(s.lines || []).length === 0 ? <span style={{ fontSize: 12.5, color: C.subtext }}>No lines.</span> : (s.lines || []).map(l => { const v = countVariance(l); return <div key={l.key} style={{ fontSize: 12.5, padding: '3px 0' }}><strong>{l.label}</strong> — counted {fmtNum(l.countedQty, 3)} vs {fmtNum(l.expectedQty, 3)} {l.unit} ({fmtVar(v.qty)}) · <em>{l.status === 'approved' ? 'posted' : l.status}</em>{l.decidedBy ? ` by ${l.decidedBy}` : ''}</div>; })}
+                  </td></tr>}
+                </React.Fragment>); })}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenanceLogs, dprEntries, rawConsumption, capaRecords, pmTasks, setTab, planMeta, spinnerPlans, dispatchPlans, deliveries, heats, settings, costData, machineProd, user, toolingItems, energyLogs, capacities,  }) {
   const now = useNowTick();
   const DEFAULT_WIDGETS = ['Demand AI', 'Sales', 'Floor Map', 'Passports'];
@@ -3789,7 +4521,9 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
     return DEFAULT_WIDGETS;
   });
   useEffect(() => { try { localStorage.setItem(widgetKey, JSON.stringify(activeWidgets)); } catch (e) { /* ignore */ } }, [activeWidgets, widgetKey]);
-  const maintAlerts = useMemo(() => computeMaintenanceAlerts(maintenanceLogs, pmTasks), [maintenanceLogs, pmTasks]);
+  const reportCtx = useContext(ReportCtx);
+  const runIntervals = useMemo(() => machineRunIntervals(batches, reportCtx?.charges), [batches, reportCtx?.charges]);
+  const maintAlerts = useMemo(() => computeMaintenanceAlerts(maintenanceLogs, pmTasks, Date.now(), runIntervals), [maintenanceLogs, pmTasks, runIntervals]);
   const toggleWidget = (w) => setActiveWidgets(prev => prev.includes(w) ? prev.filter(x => x !== w) : [...prev, w]);
   const open = (t) => { if (canSeeTab(user, t)) setTab(t); };
   const link = (t) => (t && canSeeTab(user, t) ? t : undefined);
@@ -3802,7 +4536,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
   const insights = computeSmartInsights({ orders, rawItems, batches, maintenanceLogs, dprEntries, rawConsumption, planMeta, spinnerPlans, dispatchPlans, deliveries });
   const alerts = insights.filter(i => !i.key);
   const openCapa = (capaRecords || []).filter(c => c.status !== 'Closed');
-  const pmOverdue = (pmTasks || []).map(t => pmDueInfo(t)).filter(d => d.overdue);
+  const pmOverdue = (pmTasks || []).map(t => pmStatus(t, runIntervals)).filter(d => d.overdue);
   const openBreakdowns = (maintenanceLogs || []).filter(m => m.status !== 'Resolved');
   const breakdownsToday = (maintenanceLogs || []).filter(m => isoToLocalKey(m.occurredAt) === today).length;
   const outOfTol = batches.flatMap(b => (b.passMeasurements || [])).filter(p => p.at && isoToLocalKey(p.at) === today && (p.withinToleranceOD === false || p.withinToleranceThickness === false));
@@ -3916,7 +4650,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', alignItems: 'start', marginBottom: 18 }}>
         {activeWidgets.includes('Demand AI') && <AIDemandForecasting orders={orders} onDraft={() => setActiveWidgets(p => p.includes('Sales') ? p : [...p, 'Sales'])} />}
         {activeWidgets.includes('Scheduler') && <DynamicScheduler spinnerPlans={spinnerPlans} maintenanceLogs={maintenanceLogs} capacities={capacities} onOpenPlan={() => open('plan')} />}
-        {activeWidgets.includes('AI Predictor') && <PredictiveIntelligence />}
+        {activeWidgets.includes('AI Predictor') && <PredictiveIntelligence setTab={setTab} activeWidgets={activeWidgets} onShowWidget={(w) => setActiveWidgets(p => p.includes(w) ? p : [...p, w])} />}
         {activeWidgets.includes('Sales') && <SalesQuotationEngine settings={settings} user={user} />}
         {activeWidgets.includes('Floor Map') && <StrategicFloorMap furnaces={furnaces} maintenanceLogs={maintenanceLogs} />}
         {activeWidgets.includes('Passports') && <DigitalProductPassport batches={batches} heats={heats} energyLogs={energyLogs} />}
@@ -4043,7 +4777,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: C.faint, marginBottom: 8 }}>Quality &amp; maintenance</div>
         <div style={grid(170)}>
           <Mini metric="openCapa" label="OPEN CAPAs" value={openCapa.length} tab="capa" tone={openCapa.length ? C.amber : C.ink} sub="actions not yet closed" />
-          <Mini metric="pmOverdue" label="PM TASKS OVERDUE" value={pmOverdue.length} tab="maintenance" tone={pmOverdue.length ? C.red : C.ink} sub="past their due date" />
+          <Mini metric="pmOverdue" label="PM TASKS OVERDUE" value={pmOverdue.length} tab="maintenance" tone={pmOverdue.length ? C.red : C.ink} sub="past their due date or hours" />
           <Mini metric="openBreakdowns" label="OPEN BREAKDOWNS" value={openBreakdowns.length} tab="maintenance" tone={openBreakdowns.length ? C.red : C.ink} sub={`${breakdownsToday} reported today`} />
           <Mini metric="outOfTolerance" label="OUT-OF-TOLERANCE TODAY" value={outOfTol.length} tab="spc" tone={outOfTol.length ? C.red : C.ink} sub="OD / thickness outside spec" />
         </div>
@@ -5712,7 +6446,7 @@ function HeatInfoRow({ batch, heat, canEdit, onEdit }) {
   );
 }
 
-function DimensionFields({ label, target, setTarget, tolerance, setTolerance, actual, setActual, onEnter, locked = false }) {
+function DimensionFields({ label, target, setTarget, tolerance, setTolerance, actual, setActual, onEnter, locked = false, tolEditable = false }) {
   const hasCheck = target !== '' && tolerance !== '' && actual !== '';
   const withinTolerance = hasCheck && Math.abs(Number(actual) - Number(target)) <= Number(tolerance);
   const deviation = hasCheck ? Number(actual) - Number(target) : null;
@@ -5723,7 +6457,9 @@ function DimensionFields({ label, target, setTarget, tolerance, setTolerance, ac
         {locked ? (
           <>
             <TextField label="Target, mm 🔒" aria-label={`${label} target (fixed)`} title="Fixed by the Admin in Master" type="number" value={target} readOnly disabled />
-            <TextField label="Tolerance ± mm 🔒" aria-label={`${label} tolerance (fixed)`} title="Fixed by the Admin in Master" type="number" value={tolerance} readOnly disabled />
+            {tolEditable
+              ? <TextField label="Tolerance ± mm" aria-label={`${label} tolerance`} type="number" step="0.01" value={tolerance} onChange={e => setTolerance(e.target.value)} />
+              : <TextField label="Tolerance ± mm 🔒" aria-label={`${label} tolerance (fixed)`} title="Fixed by the Admin in Master" type="number" value={tolerance} readOnly disabled />}
           </>
         ) : (
           <>
@@ -5761,6 +6497,9 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
   const [targetThickness, setTargetThickness] = useState(batch.targetThickness ?? '');
   const [toleranceThickness, setToleranceThickness] = useState(batch.toleranceThickness ?? '');
   const [actualThickness, setActualThickness] = useState('');
+  const tolLock = !!(MDs.toleranceLocked || {})[stageLabel];
+  const [tolODEdit, setTolODEdit] = useState(null), [tolThkEdit, setTolThkEdit] = useState(null);   // null = use the standard's tolerance
+  const fixedStandard = stageLabel === 'Planetary Rolling' || stageLabel === 'Cascade';   // the standard is fixed for these two: nobody picks it
   const [machine, setMachine] = useState('');
   const [scrapQty, setScrapQty] = useState('');
   const [scrapReason, setScrapReason] = useState(scrapReasons()[0]);
@@ -5771,9 +6510,11 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
   const isRolling = stageLabel === ROLLING_STAGE;
   const needsMachine = !!machineOptions;
   const isCascade = stageLabel === 'Cascade';
-  const valid = actualOD !== '' && actualThickness !== '' && (!needsMachine || machine) && (!isCascade || basketNo.trim() !== '') && (!locked || !!std) && !noStd;
-  const tOD = locked ? (std ? String(std.od) : '') : targetOD, tolOD = locked ? (std ? String(std.odTol) : '') : toleranceOD;
-  const tThk = locked ? (std ? String(std.thk) : '') : targetThickness, tolThk = locked ? (std ? String(std.thkTol) : '') : toleranceThickness;
+  const tolEditable = locked && !tolLock && isAdmin && !fixedStandard;   // Rolling / Cascade: the tolerance is changed in Master only
+  const tOD = locked ? (std ? String(std.od) : '') : targetOD, tolOD = locked ? (std ? (tolEditable && tolODEdit !== null ? tolODEdit : String(std.odTol)) : '') : toleranceOD;
+  const tThk = locked ? (std ? String(std.thk) : '') : targetThickness, tolThk = locked ? (std ? (tolEditable && tolThkEdit !== null ? tolThkEdit : String(std.thkTol)) : '') : toleranceThickness;
+  const tolOk = !(tolEditable && std) || (Number(tolOD) > 0 && Number(tolThk) > 0);
+  const valid = actualOD !== '' && actualThickness !== '' && (!needsMachine || machine) && (!isCascade || basketNo.trim() !== '') && (!locked || !!std) && !noStd && tolOk;
   const check = (t, tol, a) => (t !== '' && tol !== '' && a !== '' ? Math.abs(Number(a) - Number(t)) <= Number(tol) : null);
   const live = {
     targetOD: tOD !== '' ? Number(tOD) : null, toleranceOD: tolOD !== '' ? Number(tolOD) : null, actualOD: actualOD !== '' ? Number(actualOD) : null,
@@ -5816,20 +6557,20 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
       {noStd && <p role="alert" data-testid="no-standard" style={{ fontSize: 12.5, color: C.red, fontWeight: 600 }}>The Admin has not defined a standard for {stageLabel} yet — it is required before a pass can be recorded (Master &gt; Process standards).</p>}
       {locked && (
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.copperDark, fontWeight: 600, maxWidth: 420 }}>
-          Standard <span style={{ fontWeight: 400, color: C.subtext, fontSize: 11.5 }}>(target and tolerance are fixed by the Admin in Master — you only enter what you measured)</span>
-          {isAdmin ? (
+          Standard <span style={{ fontWeight: 400, color: C.subtext, fontSize: 11.5 }}>({'the standard, target and tolerance are set only in Master — you enter what you measured'})</span>
+          {isAdmin && !fixedStandard ? (
             <select aria-label="Standard" value={standardId} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
               <option value="">— choose the standard —</option>{stds.map(x => <option key={x.id} value={x.id}>{x.name}{x.spec ? ` · ${x.spec}` : ''}</option>)}
             </select>
           ) : (
             <div data-testid="standard-readonly" style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.borderSoft}`, fontSize: 14, background: C.panelAlt, color: C.ink, fontWeight: 700 }}>
-              {std ? `${std.name}${std.spec ? ` · ${std.spec}` : ''}` : 'No matching standard found'}
+              {std ? `${std.name}${std.spec ? ` · ${std.spec}` : ''}` : 'No standard is fixed for this size — ask the Admin to set one in Master'}
             </div>
           )}
         </label>
       )}
-      <DimensionFields label="OD" target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={setToleranceOD} actual={actualOD} setActual={setActualOD} onEnter={onEnter} locked={locked} />
-      <DimensionFields label="THICKNESS" target={tThk} setTarget={setTargetThickness} tolerance={tolThk} setTolerance={setToleranceThickness} actual={actualThickness} setActual={setActualThickness} locked={locked} onEnter={onEnter} />
+      <DimensionFields label="OD" target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={locked ? setTolODEdit : setToleranceOD} actual={actualOD} setActual={setActualOD} onEnter={onEnter} locked={locked} tolEditable={tolEditable} />
+      <DimensionFields label="THICKNESS" target={tThk} setTarget={setTargetThickness} tolerance={tolThk} setTolerance={locked ? setTolThkEdit : setToleranceThickness} actual={actualThickness} setActual={setActualThickness} locked={locked} tolEditable={tolEditable} onEnter={onEnter} />
       {isCascade && (
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.copperDark, fontWeight: 600, maxWidth: 320 }}>
           Basket number <span style={{ color: C.red }}>*</span>
@@ -5927,7 +6668,11 @@ function ReworkPanel({ batch, user, onComplete }) {
 function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan, setTab, onConfirm, user }) {
   const isAdmin = user?.role === 'Admin';
   const lines = (planLines || []).filter(l => l.spinnerMachine === batch.spinnerMachine && (!batch.pulledLineId || l.id === batch.pulledLineId));
-  const [lineId, setLineId] = useState(batch.pulledLineId && (planLines || []).some(l => l.id === batch.pulledLineId && l.route) ? batch.pulledLineId : '');
+  const [lineId, setLineId] = useState(() => {
+    if (batch.pulledLineId && (planLines || []).some(l => l.id === batch.pulledLineId && l.route)) return batch.pulledLineId;
+    const usable = lines.filter(l => l.route);
+    return usable.length === 1 ? usable[0].id : '';      // only one planned size for this spinner: it is the target
+  });
   const [targetOD, setTargetOD] = useState(batch.targetOD ?? '');
   const [toleranceOD, setToleranceOD] = useState(batch.toleranceOD ?? '');
   const [actualOD, setActualOD] = useState('');
@@ -5943,6 +6688,9 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
   const std = stds.find(x => x.id === standardId) || standardForSpec(stds, line?.spec) || (stds.length === 1 ? stds[0] : null);
   const locked = stds.length > 0;
   const noStd = stds.length === 0 && !!(MDs.standardRequired || {}).Spinner;
+  const tolLock = !!(MDs.toleranceLocked || {}).Spinner;
+  const planTarget = planSizeOdThk(line?.spec);                 // the planned size IS the target
+  const [tolODEdit, setTolODEdit] = useState(null), [tolThkEdit, setTolThkEdit] = useState(null);   // null = the standard's / earlier tolerance
 
   // Multi-pass schedule: when the standard defines passes, the operator logs each one;
   // the LAST pass is mirrored into the final OD / thickness so the normal tolerance check still applies.
@@ -5955,7 +6703,7 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
     const init = {};
     if (Array.isArray(std?.passes)) std.passes.forEach((p, i) => { init[i] = { od: '', thk: '', rpm: '' }; });
     setPassLogs(init);
-    setActualOD(''); setActualThickness('');
+    setActualOD(''); setActualThickness(''); setTolODEdit(null); setTolThkEdit(null);
   }, [std?.id]);
   const handlePassChange = (index, field, val) => {
     setPassLogs(prev => ({ ...prev, [index]: { ...(prev[index] || {}), [field]: val } }));
@@ -5965,9 +6713,15 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
     }
   };
 
-  const valid = line && line.route && actualOD !== '' && actualThickness !== '' && (!locked || !!std) && !noStd;
-  const tOD = locked ? (std ? String(std.od) : '') : targetOD, tolOD = locked ? (std ? String(std.odTol) : '') : toleranceOD;
-  const tThk = locked ? (std ? String(std.thk) : '') : targetThickness, tolThk = locked ? (std ? String(std.thkTol) : '') : toleranceThickness;
+  const targetLocked = !!planTarget || locked;
+  const tolEditable = targetLocked && isAdmin && !(tolLock && !!std);   // only the Admin can change the tolerance here, and not once it is locked in Master
+  const baseTolOD = std ? String(std.odTol) : String(toleranceOD ?? ''), baseTolThk = std ? String(std.thkTol) : String(toleranceThickness ?? '');
+  const tOD = planTarget ? String(planTarget.od) : (locked ? (std ? String(std.od) : '') : targetOD);
+  const tThk = planTarget ? String(planTarget.thk) : (locked ? (std ? String(std.thk) : '') : targetThickness);
+  const tolOD = tolEditable ? (tolODEdit !== null ? tolODEdit : baseTolOD) : baseTolOD;
+  const tolThk = tolEditable ? (tolThkEdit !== null ? tolThkEdit : baseTolThk) : baseTolThk;
+  const tolOk = Number(tolOD) > 0 && Number(tolThk) > 0;
+  const valid = line && line.route && actualOD !== '' && actualThickness !== '' && (!locked || !!std) && !noStd && tolOk;
   const gm = calcGramPerMeter(tOD !== '' ? tOD : actualOD, tThk !== '' ? tThk : actualThickness);
   const dieMeters = gm > 0 && Number(batch.qty) > 0 ? Math.round(metersFromKg(batch.qty, gm)) : 0;
   const pickedDie = dies.find(d => d.id === dieId) || null;
@@ -5998,6 +6752,17 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
         <>
           {draft && <p style={{ fontSize: 12, color: C.amber }}>Today's plan has not been released yet — confirm with the Manager before proceeding.</p>}
           {noStd && <p role="alert" data-testid="no-standard" style={{ fontSize: 12.5, color: C.red, fontWeight: 600 }}>The Admin has not defined a standard for the Spinner yet — it is required before a size can be confirmed (Master &gt; Process standards).</p>}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500, maxWidth: 520 }}>
+            Planned size for this spinner <span style={{ fontWeight: 400, fontSize: 11.5 }}>(becomes the target below)</span>
+            <select aria-label="Planned size" value={lineId} onChange={e => { setLineId(e.target.value); setErr(''); }} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
+              <option value="">— choose from today's plan —</option>
+              {lines.map(l => (
+                <option key={l.id} value={l.id} disabled={!l.route}>
+                  {l.spec} → {l.route ? `${l.route}${l.routeMachine ? ' · ' + l.routeMachine : ''}` : 'route not set in plan'} · planned {fmtQty(l.planned, l.unit)}
+                </option>
+              ))}
+            </select>
+          </label>
           {locked && (
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.copperDark, fontWeight: 600, maxWidth: 420 }}>
               Standard <span style={{ fontWeight: 400, color: C.subtext, fontSize: 11.5 }}>(fixed by the Admin in Master — you only enter what you measured; chosen automatically when it matches the planned size)</span>
@@ -6064,8 +6829,8 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
             </div>
           )}
           {/* With a pass schedule the final pass above fills these in; the fields stay visible so the tolerance verdict shows */}
-          <DimensionFields label={hasPasses ? 'FINAL OD' : 'OD'} target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={setToleranceOD} actual={actualOD} setActual={hasPasses ? () => {} : setActualOD} locked={locked} />
-          <DimensionFields label={hasPasses ? 'FINAL THICKNESS' : 'THICKNESS'} target={tThk} setTarget={setTargetThickness} tolerance={tolThk} setTolerance={setToleranceThickness} actual={actualThickness} setActual={hasPasses ? () => {} : setActualThickness} locked={locked} />
+          <DimensionFields label={hasPasses ? 'FINAL OD' : 'OD'} target={tOD} setTarget={setTargetOD} tolerance={tolOD} setTolerance={setTolODEdit} actual={actualOD} setActual={hasPasses ? () => {} : setActualOD} locked={targetLocked} tolEditable={tolEditable} />
+          <DimensionFields label={hasPasses ? 'FINAL THICKNESS' : 'THICKNESS'} target={tThk} setTarget={setTargetThickness} tolerance={tolThk} setTolerance={setTolThkEdit} actual={actualThickness} setActual={hasPasses ? () => {} : setActualThickness} locked={targetLocked} tolEditable={tolEditable} />
           {dies.length > 0 && (
             <div data-testid="gate-die" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 520 }}>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>
@@ -6084,17 +6849,7 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
               {Number(batch.qty) > 0 && <span><strong>Theoretical length:</strong> {fmtMeters(metersFromKg(batch.qty, gm))} meters <span style={{ color: C.faint }}>(for {batch.qty} kg)</span></span>}
             </div>
           )}
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500, maxWidth: 520 }}>
-            Planned size for this spinner
-            <select aria-label="Planned size" value={lineId} onChange={e => { setLineId(e.target.value); setErr(''); }} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
-              <option value="">— choose from today's plan —</option>
-              {lines.map(l => (
-                <option key={l.id} value={l.id} disabled={!l.route}>
-                  {l.spec} → {l.route ? `${l.route}${l.routeMachine ? ' · ' + l.routeMachine : ''}` : 'route not set in plan'} · planned {fmtQty(l.planned, l.unit)}
-                </option>
-              ))}
-            </select>
-          </label>
+          
           {line && (
             <div data-testid="plan-line-detail" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10, padding: 10, background: C.panel, borderRadius: 8, fontSize: 12.5 }}>
               <div><div style={{ color: C.faint, fontSize: 11 }}>SIZE</div><strong>{line.spec}</strong></div>
@@ -6104,6 +6859,7 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
               {MDs.seeCustomer && <div><div style={{ color: C.faint, fontSize: 11 }}>LINKED ORDER</div><strong>{linkedOrder ? `${orderLabel(linkedOrder)} ${linkedOrder.customer}` : 'None (make to stock)'}</strong></div>}
             </div>
           )}
+          {line && !tolOk && !isAdmin && <p role="alert" data-testid="no-tolerance" style={{ color: C.red, fontSize: 12.5 }}>No tolerance is set for this size. Ask the Admin to define the Spinner standard in Master.</p>}
           {err && <p role="alert" style={{ color: C.red, fontSize: 12.5 }}>{err}</p>}
           <div>
             <Button disabled={!valid} onClick={submit}>Confirm &amp; send to {line?.route || 'route'}</Button>
@@ -7256,7 +8012,7 @@ function PassScheduleBuilder({ inputSize, setInputSize, passes, onChange }) {
   );
 }
 
-function MasterStandardsCard({ stage, standards, required, onSave, onRequired }) {
+function MasterStandardsCard({ stage, standards, required, tolLocked, onSave, onRequired, onTolLock }) {
   const blank = { name: '', spec: '', od: '', odTol: '', thk: '', thkTol: '', inputSize: '', passes: [] };
   const [f, setF] = useState(blank), [editing, setEditing] = useState(null), [err, setErr] = useState(''), [msg, setMsg] = useState('');
   const mine = (standards || []).filter(x => x.stage === stage);
@@ -7275,8 +8031,12 @@ function MasterStandardsCard({ stage, standards, required, onSave, onRequired })
           <input type="checkbox" aria-label={`Require a standard at ${stage}`} checked={!!required} onChange={e => { const r = onRequired(stage, e.target.checked); setErr(r?.error || ''); }} />
           Require a standard (nothing can be recorded here until one is defined)
         </label>
+        {stage === 'Spinner' && <label style={{ fontSize: 12.5, color: C.subtext, display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input type="checkbox" aria-label={`Lock the tolerance at ${stage}`} checked={!!tolLocked} onChange={e => { const r = onTolLock && onTolLock(stage, e.target.checked); setErr(r?.error || ''); }} />
+          Lock the tolerance (when ticked nobody can change it at the Spinner gate; when off, only the Admin can)
+        </label>}
       </div>
-      <p style={{ fontSize: 12, color: C.subtext, marginTop: 2, marginBottom: 10 }}>{mine.some(x => x.active !== false) ? `On the shop floor the operator picks one of these, the target and tolerance are locked, and only the measured values are typed.` : `No standard yet: ${required ? 'the stage is blocked until you add one.' : 'the form still lets the operator type targets and tolerances, as before.'}`}</p>
+      <p style={{ fontSize: 12, color: C.subtext, marginTop: 2, marginBottom: 10 }}>{mine.some(x => x.active !== false) ? `On the shop floor the standard, target and tolerance are fixed — only the measured values are typed. ${stage === 'Spinner' ? 'At the Spinner the Admin may adjust the tolerance on the gate unless you tick \"Lock the tolerance\".' : 'This tolerance is changed here in Master only.'}` : `No standard yet: ${required ? 'the stage is blocked until you add one.' : 'the form still lets the operator type targets and tolerances, as before.'}`}</p>
       {mine.length > 0 && (
         <div style={{ overflowX: 'auto', marginBottom: 10 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 640 }}>
@@ -7342,7 +8102,7 @@ function MasterCapacityCard({ capacities, onSave }) {
     </Card>
   );
 }
-function MasterTab({ user, settings, master, machines, orders, onSaveSettings, onSaveList, onUpdateMachines, onSaveAccess, onResetAccess, onCopyAccess, onSaveData, onSaveRequired, onSaveCapacities }) {
+function MasterTab({ user, settings, master, machines, orders, onSaveSettings, onSaveList, onUpdateMachines, onSaveAccess, onResetAccess, onCopyAccess, onSaveData, onSaveRequired, onSaveTolLock, onSaveCapacities }) {
   const [section, setSection] = useState('targets');
   if (!canSeeTab(user, 'master')) {
     return <div><SectionTitle sub="Fixed values and lists for the whole plant.">Master</SectionTitle><Card><EmptyState title="Admin only." sub="Master data can only be opened by the Admin." /></Card></div>;
@@ -7406,7 +8166,7 @@ function MasterTab({ user, settings, master, machines, orders, onSaveSettings, o
       {section === 'standards' && (
         <div data-testid="master-standards">
           <p style={{ fontSize: 12, color: C.subtext, marginBottom: 10 }}>Fixed sizes and tolerances for Planetary Rolling, Cascade and the Spinner. Only you set them here; on the shop floor they are locked and the operator types only what was measured, which is compared with them directly. Values already recorded never change when you edit a standard.</p>
-          {STANDARD_STAGES.map(st => <MasterStandardsCard key={st} stage={st} standards={master.standards || []} required={!!(master.standardRequired || {})[st]} onSave={onSaveData} onRequired={onSaveRequired} />)}
+          {STANDARD_STAGES.map(st => <MasterStandardsCard key={st} stage={st} standards={master.standards || []} required={!!(master.standardRequired || {})[st]} tolLocked={!!(master.toleranceLocked || {})[st]} onSave={onSaveData} onRequired={onSaveRequired} onTolLock={onSaveTolLock} />)}
         </div>
       )}
       {section === 'access' && <MasterAccess onSave={onSaveAccess} onReset={onResetAccess} onCopy={onCopyAccess} />}
@@ -7696,7 +8456,8 @@ function MaintenanceTab({ maintenanceLogs, onAdd, onResolve, onSetInProgress, on
     .filter(m => filter === 'All' || (filter === 'Open' ? m.status !== 'Resolved' : m.status === filter))
     .sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt));
 
-  const overduePm = pmTasks.filter(t => pmDueInfo(t).overdue).length;
+  const rcPm = useContext(ReportCtx);
+  const overduePm = pmTasks.filter(t => pmStatus(t, machineRunIntervals(rcPm?.batches, rcPm?.charges)).overdue).length;
 
   return (
     <div>
@@ -7891,23 +8652,65 @@ function CapaTab({ capaRecords, onAdd, onUpdateStatus, onDelete, user }) {
    PREVENTIVE MAINTENANCE SCHEDULING
    ========================================================================= */
 function pmDueInfo(task) {
+  if (!(Number(task.frequencyDays) > 0)) return { nextDue: null, daysUntilDue: Infinity, overdue: false, dueSoon: false, none: true };   // an hours-only task has no calendar due date
   const last = task.lastDoneDate ? new Date(task.lastDoneDate) : null;
   const nextDue = last ? new Date(last.getTime() + task.frequencyDays * 86400000) : new Date(task.createdAt || Date.now());
   const daysUntilDue = (nextDue - new Date()) / 86400000;
   return { nextDue, daysUntilDue, overdue: daysUntilDue < 0, dueSoon: daysUntilDue >= 0 && daysUntilDue <= 3 };
 }
+/* ---- Running-hours maintenance: hours a machine has really run, from the shop-floor records ---- */
+const machineKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');   // "LWC 1" == "lwc1"
+// every timed run in the app: machine runs (start -> finish, or still running) and annealing pot cycles
+function machineRunIntervals(batches, charges, nowMs = Date.now()) {
+  const out = [];
+  (batches || []).forEach(b => {
+    const m = b.flow?.machine, name = m?.machine || b.routeMachine;
+    if (!m?.startedAt || !name) return;
+    const st = Date.parse(m.startedAt), en = m.endedAt ? Date.parse(m.endedAt) : nowMs;
+    if (en > st) out.push({ key: machineKey(name), label: name, s: st, e: en });
+  });
+  (charges || []).forEach(c => {
+    if (!c.potInAt || c.potNo == null) return;
+    const st = Date.parse(c.potInAt), en = c.potOutAt ? Date.parse(c.potOutAt) : nowMs;
+    if (en > st) out.push({ key: machineKey(`Pot ${c.potNo}`), label: `Pot ${c.potNo}`, s: st, e: en });
+  });
+  return out;
+}
+// how much of a task's running-hours interval is used up, and when it will run out at the recent pace
+function pmHoursInfo(task, intervals, nowMs = Date.now()) {
+  const limit = Number(task.intervalHours) || 0;
+  if (!(limit > 0)) return null;
+  const key = machineKey(task.machineId);
+  const mine = (intervals || []).filter(i => i.key === key);
+  const since = task.lastDoneAt ? Date.parse(task.lastDoneAt) : task.lastDoneDate ? new Date(`${task.lastDoneDate}T00:00:00`).getTime() : (Date.parse(task.createdAt || '') || nowMs);
+  const overlap = (i, from, to) => Math.max(0, Math.min(i.e, to) - Math.max(i.s, from)) / 3600000;
+  const used = mine.reduce((t, i) => t + overlap(i, since, nowMs), 0);
+  const rate = mine.reduce((t, i) => t + overlap(i, nowMs - 14 * 86400000, nowMs), 0) / 14;      // running hours per day, last 14 days
+  const remaining = limit - used, pct = (used / limit) * 100;
+  return { limit, used, remaining, pct, rate, noData: mine.length === 0, forecastDays: remaining > 0 && rate > 0 ? remaining / rate : null, overdue: pct >= 100, dueSoon: pct >= 90 && pct < 100 };
+}
+function pmStatus(task, intervals, nowMs = Date.now()) {
+  const cal = pmDueInfo(task), hrs = pmHoursInfo(task, intervals, nowMs);
+  const hrsKey = hrs && !hrs.noData ? (hrs.overdue ? -(hrs.pct - 100) - 1 : hrs.forecastDays ?? 1e6) : Infinity;
+  return { cal, hrs, overdue: cal.overdue || !!(hrs && !hrs.noData && hrs.overdue), dueSoon: cal.dueSoon || !!(hrs && !hrs.noData && hrs.dueSoon), sortKey: Math.min(cal.none ? Infinity : cal.daysUntilDue, hrsKey) };
+}
 function PmTaskForm({ onAdd, onClose }) {
-  const [f, setF] = useState({ machineId: '', taskName: '', frequencyDays: '30', notes: '' });
+  const [f, setF] = useState({ machineId: '', taskName: '', frequencyDays: '30', intervalHours: '', notes: '' });
   const set = (k, v) => setF(prev => ({ ...prev, [k]: v }));
-  const valid = f.machineId.trim() && f.taskName.trim() && Number(f.frequencyDays) > 0;
-  const submit = () => { if (!valid) return; onAdd({ id: uid(), ...f, frequencyDays: Number(f.frequencyDays), lastDoneDate: null, createdAt: new Date().toISOString() }); onClose(); };
+  const rc = useContext(ReportCtx);
+  const timedMachines = [...new Set(machineRunIntervals(rc?.batches, rc?.charges).map(i => i.label))].sort();
+  const valid = f.machineId.trim() && f.taskName.trim() && (Number(f.frequencyDays) > 0 || Number(f.intervalHours) > 0);
+  const submit = () => { if (!valid) return; onAdd({ id: uid(), ...f, frequencyDays: Number(f.frequencyDays) > 0 ? Number(f.frequencyDays) : null, intervalHours: Number(f.intervalHours) > 0 ? Number(f.intervalHours) : null, lastDoneDate: null, createdAt: new Date().toISOString() }); onClose(); };
   return (
     <Card style={{ marginBottom: 16, background: C.panelAlt }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12 }}>
-        <TextField label="Machine" value={f.machineId} onChange={e => set('machineId', e.target.value)} placeholder="e.g. Spinner 2" required />
+        <TextField label="Machine" list="pm-timed-machines" value={f.machineId} onChange={e => set('machineId', e.target.value)} placeholder="e.g. LWC 1 or Pot 2" required />
+        <datalist id="pm-timed-machines">{timedMachines.map(n => <option key={n} value={n} />)}</datalist>
         <TextField label="Task" value={f.taskName} onChange={e => set('taskName', e.target.value)} placeholder="e.g. Lubricate bearings" required />
-        <TextField label="Every (days)" type="number" min="1" value={f.frequencyDays} onChange={e => set('frequencyDays', e.target.value)} required />
+        <TextField label="Every (days)" type="number" min="1" value={f.frequencyDays} onChange={e => set('frequencyDays', e.target.value)} />
+        <TextField label="Or every (running hours)" type="number" min="1" value={f.intervalHours} onChange={e => set('intervalHours', e.target.value)} placeholder="e.g. 500" />
       </div>
+      <p style={{ fontSize: 11.5, color: C.subtext, margin: '8px 0 0' }}>Set days, running hours, or both (whichever comes first). Running hours are counted from the shop-floor machine runs (LWC / PCC / CTL machines) and annealing pots, from the day the task is added or last done.</p>
       <div style={{ marginTop: 12 }}>
         <TextField label="Notes (optional)" value={f.notes} onChange={e => set('notes', e.target.value)} />
       </div>
@@ -7920,7 +8723,9 @@ function PmTaskForm({ onAdd, onClose }) {
 }
 function PreventiveMaintenanceSection({ pmTasks, onAdd, onMarkDone, onDelete, user }) {
   const [showForm, setShowForm] = useState(false);
-  const withDue = pmTasks.map(t => ({ ...t, due: pmDueInfo(t) })).sort((a, b) => a.due.daysUntilDue - b.due.daysUntilDue);
+  const rc = useContext(ReportCtx);
+  const intervals = useMemo(() => machineRunIntervals(rc?.batches, rc?.charges), [rc?.batches, rc?.charges]);
+  const withDue = pmTasks.map(t => ({ ...t, st: pmStatus(t, intervals) })).sort((a, b) => a.st.sortKey - b.st.sortKey);
 
   return (
     <div>
@@ -7940,13 +8745,31 @@ function PreventiveMaintenanceSection({ pmTasks, onAdd, onMarkDone, onDelete, us
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                     <span style={{ fontWeight: 700, color: C.ink }}>{t.machineId}</span>
                     <span style={{ fontSize: 13, color: C.subtext }}>{t.taskName}</span>
-                    <Badge tone={t.due.overdue ? 'red' : t.due.dueSoon ? 'amber' : 'green'}>
-                      {t.due.overdue ? `Overdue ${Math.abs(t.due.daysUntilDue).toFixed(0)}d` : t.due.dueSoon ? `Due in ${t.due.daysUntilDue.toFixed(0)}d` : `Due ${formatDate(t.due.nextDue.toISOString().slice(0, 10))}`}
-                    </Badge>
+                    {!t.st.cal.none && (
+                      <Badge tone={t.st.cal.overdue ? 'red' : t.st.cal.dueSoon ? 'amber' : 'green'}>
+                        {t.st.cal.overdue ? `Overdue ${Math.abs(t.st.cal.daysUntilDue).toFixed(0)}d` : t.st.cal.dueSoon ? `Due in ${t.st.cal.daysUntilDue.toFixed(0)}d` : `Due ${formatDate(t.st.cal.nextDue.toISOString().slice(0, 10))}`}
+                      </Badge>
+                    )}
+                    {t.st.hrs && !t.st.hrs.noData && (
+                      <Badge tone={t.st.hrs.overdue ? 'red' : t.st.hrs.dueSoon ? 'amber' : 'green'}>
+                        {t.st.hrs.overdue ? `Overdue ${Math.abs(t.st.hrs.remaining).toFixed(0)} h` : `${t.st.hrs.remaining.toFixed(0)} h left`}
+                      </Badge>
+                    )}
                   </div>
                   <p style={{ fontSize: 11.5, color: C.faint, marginTop: 4 }}>
-                    Every {t.frequencyDays} days · Last done: {t.lastDoneDate ? formatDate(t.lastDoneDate) : 'never'}{t.notes ? ` · ${t.notes}` : ''}
+                    {[t.frequencyDays > 0 ? `Every ${t.frequencyDays} days` : null, t.intervalHours > 0 ? `Every ${t.intervalHours} running hours` : null].filter(Boolean).join(' or ')} · Last done: {t.lastDoneDate ? formatDate(t.lastDoneDate) : 'never'}{t.notes ? ` · ${t.notes}` : ''}
                   </p>
+                  {t.st.hrs && (t.st.hrs.noData ? (
+                    <p data-testid={`pm-nodata-${t.id}`} style={{ fontSize: 11.5, color: C.amber, marginTop: 4 }}>No timed runs recorded for "{t.machineId}". Running hours come from LWC / PCC / CTL machine runs and annealing pots (e.g. "LWC 1", "Pot 2").</p>
+                  ) : (
+                    <div data-testid={`pm-hours-${t.id}`} style={{ marginTop: 8, maxWidth: 420 }}>
+                      <div style={{ height: 8, borderRadius: 4, background: C.borderSoft, overflow: 'hidden' }}><div style={{ width: `${Math.min(100, t.st.hrs.pct)}%`, height: '100%', background: t.st.hrs.overdue ? C.red : t.st.hrs.dueSoon ? C.amber : C.green }} /></div>
+                      <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 4 }}>
+                        <span className="font-mono">{t.st.hrs.used.toFixed(1)}</span> of <span className="font-mono">{t.st.hrs.limit}</span> running hours used ({Math.round(t.st.hrs.pct)}%)
+                        {!t.st.hrs.overdue && t.st.hrs.forecastDays != null && <> · at the last 14 days' pace ({t.st.hrs.rate.toFixed(1)} h/day) it is due in about <strong>{Math.ceil(t.st.hrs.forecastDays)} day(s)</strong></>}
+                      </div>
+                    </div>
+                  ))}
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Button variant="secondary" onClick={() => onMarkDone(t.id, user)}>Mark done today</Button>
@@ -8426,9 +9249,10 @@ function InventoryTab({ batches, rawItems, finishedItems, onAddRaw, onAdjustRaw,
         imported.push({ id: uid(), spec: normalizeSpec(spec), category, unit: 'kg', qty: Number(qtyRaw), altUnit: fgAltUnit(category), altQty: altRaw === '' ? 0 : Number(altRaw) });
       });
       if (!imported.length) throw new Error('No finished-goods rows found. Check the column headings and data.');
-      if (onAddFinishedBatch) onAddFinishedBatch(imported);
+      let res = null;
+      if (onAddFinishedBatch) res = onAddFinishedBatch(imported);
       else imported.forEach(onAddFinished);
-      setImportMsg(`Imported ${imported.length} finished-goods row(s).`);
+      setImportMsg(res ? `Imported ${imported.length} row(s): ${res.merged} added to sizes already in stock, ${res.added} new size${res.added === 1 ? '' : 's'}.` : `Imported ${imported.length} finished-goods row(s).`);
     } catch (e) { setImportErr(e.message || 'Could not import this Excel file.'); }
     if (fgImportRef.current) fgImportRef.current.value = '';
   };
@@ -10216,7 +11040,7 @@ function CostLinesCard({ title, sub, presets, lines, outputMT, onChange, canEdit
   );
 }
 
-function CostOfProductionTab({ costData, onUpdateMonth, batches, dprEntries, machineProd, settings, user }) {
+function CostOfProductionTab({ costData, onUpdateMonth, batches, dprEntries, machineProd, settings, user, charges, onUpdateSettings }) {
   const [month, setMonth] = useState(todayKey().slice(0, 7));
   const target = costTargetPerKg(settings);
   const canEdit = canViewCost(user.role);
@@ -10371,6 +11195,7 @@ function CostOfProductionTab({ costData, onUpdateMonth, batches, dprEntries, mac
           </ResponsiveContainer>
         </ChartCard>
       </div>
+      <BatchCostingCard batches={batches} charges={charges} settings={settings} month={month} onUpdateSettings={onUpdateSettings} canEdit={canEdit} />
     </div>
   );
 }
@@ -10787,9 +11612,9 @@ function RunStartRow({ b, can, onStart, canHold, onHold }) {
    logged as scrap (with the reason) and any remaining difference as process loss, so the
    quantity that moves on to annealing / packing is the accepted weight.
    ========================================================================= */
-const COIL_ROUTES = ['LWC', 'PCC'];
+const COIL_ROUTES = ['LWC', 'PCC', 'CTL'];   // CTL counts pieces instead of coils
 const round3 = (v) => Math.round((Number(v) + 1e-9) * 1000) / 1000;
-function validateCoilRecord(r, basketKg) {
+function validateCoilRecord(r, basketKg, route) {
   const e = {};
   const num = (v) => (v === '' || v == null ? NaN : Number(v));
   const made = num(r.made), acc = num(r.accepted), rej = num(r.rejected), accKg = num(r.acceptedKg), rejKg = num(r.rejectedKg);
@@ -10811,6 +11636,7 @@ function validateCoilRecord(r, basketKg) {
   if (!e.acceptedKg && !e.rejectedKg && accKg + rejKg > Number(basketKg) + 1e-6) e.acceptedKg = `Accepted + rejected weight (${round3(accKg + rejKg)} kg) is more than the basket weight (${round3(basketKg)} kg).`;
   if (rej > 0 && !String(r.rejectReason || '').trim()) e.rejectReason = 'Choose why the coils were rejected.';
   const loss = round3(Number(basketKg) - (accKg || 0) - (rejKg || 0));
+  if (route === 'CTL') Object.keys(e).forEach(k => { e[k] = e[k].replace(/\bcoils\b/g, 'pieces').replace(/\bcoil\b/g, 'piece'); });
   return { errors: e, valid: Object.keys(e).length === 0, lossKg: loss };
 }
 const rate = (num, den) => (den > 0 ? (num / den) * 100 : null);
@@ -10852,7 +11678,7 @@ function CoilFields({ rec, setRec, errors, basketKg, route, gm = 0 }) {
   );
   return (
     <div data-testid="coil-fields" style={{ padding: 10, background: C.copperFaint, borderRadius: 8, marginTop: 6 }}>
-      <div style={{ fontSize: 11.5, fontWeight: 700, color: C.copperDark, letterSpacing: 0.3, marginBottom: 6 }}>COILS MADE FROM THIS BASKET ({fmtQty(basketKg, 'kg')} in)</div>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: C.copperDark, letterSpacing: 0.3, marginBottom: 6 }}>{coilWord(route).toUpperCase()} MADE FROM THIS BASKET ({fmtQty(basketKg, 'kg')} in)</div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         {f('made', 'made')}{f('accepted', 'accepted')}{f('rejected', 'rejected')}
         {f('acceptedKg', 'accepted kg', 110, '0.01')}{f('rejectedKg', 'rejected kg', 110, '0.01')}
@@ -10862,11 +11688,14 @@ function CoilFields({ rec, setRec, errors, basketKg, route, gm = 0 }) {
           </select>
         </label>
       </div>
-      {gm > 0 && (Number(rec.acceptedKg) > 0 || Number(rec.rejectedKg) > 0) && (
+      {gm > 0 && (
         <div data-testid="coil-lengths" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, marginTop: 8, color: C.subtext }}>
           <span><strong>Target:</strong> {gm.toFixed(1)} g/m</span>
-          <span style={{ color: C.green }}><strong>Accepted length:</strong> {fmtMeters(metersFromKg(rec.acceptedKg, gm))} m</span>
-          <span style={{ color: C.red }}><strong>Rejected length:</strong> {fmtMeters(metersFromKg(rec.rejectedKg, gm))} m</span>
+          <span><strong>Expected length:</strong> {fmtMeters(metersFromKg(basketKg, gm))} m <span style={{ color: C.faint }}>(for {fmtQty(basketKg, 'kg')})</span></span>
+          {(Number(rec.acceptedKg) > 0 || Number(rec.rejectedKg) > 0) && <>
+            <span style={{ color: C.green }}><strong>Accepted length:</strong> {fmtMeters(metersFromKg(rec.acceptedKg, gm))} m</span>
+            <span style={{ color: C.red }}><strong>Rejected length:</strong> {fmtMeters(metersFromKg(rec.rejectedKg, gm))} m</span>
+          </>}
         </div>
       )}
       {errors && Object.keys(errors).length > 0 && (
@@ -10898,7 +11727,7 @@ function RunFinishRow({ b, can, onFinish, canHold, onHold }) {
               <input aria-label={`Finish time for ${b.productionOrderNo}`} title="Leave blank to use the current time" type="datetime-local" value={at} onChange={e => setAt(e.target.value)} style={miniInput} /><span style={{ fontSize: 11, color: C.faint }}>blank = now</span>
               <Button onClick={() => { const r = onFinish(b.id, { endedAt: at, coils: needsCoils ? rec : null }); setErr(r?.error && !r.errors ? r.error : ''); setErrors(r?.errors || null); }}>{routeHasAnnealing(b) ? 'Finish & inform Annealing' : 'Finish & inform Packing'}</Button>
             </div>
-            {needsCoils && <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={basketKg} route={b.route} gm={calcGramPerMeter(b.targetOD, b.targetThickness)} />}
+            {needsCoils && <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={basketKg} route={b.route} gm={batchGramPerMeter(b)} />}
             <ErrNote err={err} />
           </div>
         ) : <span style={{ color: C.faint, fontSize: 12 }}>Running</span>}
@@ -10922,25 +11751,25 @@ function CoilPanel({ batch, user, onSave }) {
   return (
     <div data-testid="coil-panel" style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${C.border}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11.5, fontWeight: 700, color: C.subtext, letterSpacing: 0.4 }}>COIL RECORD · {batch.route}</span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: C.subtext, letterSpacing: 0.4 }}>{coilWord(batch.route).toUpperCase().replace('PIECES','PIECE').replace('COILS','COIL')} RECORD · {batch.route}</span>
         {editable && !editing && <button type="button" onClick={startEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.steel, fontSize: 12.5, fontWeight: 600 }}>Edit coil record</button>}
         {!editable && coilEditable(batch) === false && <span style={{ fontSize: 11.5, color: C.faint }}>locked once the next department has pulled it</span>}
       </div>
       {!editing ? (
         <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', marginTop: 6 }}>
-          {cell('COILS MADE', c.made)}{cell('ACCEPTED', c.accepted, C.green)}{cell('REJECTED', c.rejected, c.rejected ? C.red : C.ink)}
+          {cell(`${coilWord(batch.route).toUpperCase()} MADE`, c.made)}{cell('ACCEPTED', c.accepted, C.green)}{cell('REJECTED', c.rejected, c.rejected ? C.red : C.ink)}
           {cell('ACCEPTED WEIGHT', fmtQty(c.acceptedKg, 'kg'), C.green)}{cell('REJECTED WEIGHT', fmtQty(c.rejectedKg, 'kg'), c.rejectedKg ? C.red : C.ink)}
           {c.lossKg > 0 && cell('PROCESS LOSS', fmtQty(c.lossKg, 'kg'), C.amber)}
-          {cell('REJECTION RATE', `${fmtPct(rate(c.rejected, c.made))} coils · ${fmtPct(rate(c.rejectedKg, c.acceptedKg + c.rejectedKg))} weight`)}
-          {calcGramPerMeter(batch.targetOD, batch.targetThickness) > 0 && <>
-            {cell('ACCEPTED LENGTH', `${fmtMeters(metersFromKg(c.acceptedKg, calcGramPerMeter(batch.targetOD, batch.targetThickness)))} m`, C.green)}
-            {cell('REJECTED LENGTH', `${fmtMeters(metersFromKg(c.rejectedKg, calcGramPerMeter(batch.targetOD, batch.targetThickness)))} m`, c.rejectedKg ? C.red : C.ink)}
+          {cell('REJECTION RATE', `${fmtPct(rate(c.rejected, c.made))} {coilWord(batch.route)} · ${fmtPct(rate(c.rejectedKg, c.acceptedKg + c.rejectedKg))} weight`)}
+          {batchGramPerMeter(batch) > 0 && <>
+            {cell('ACCEPTED LENGTH', `${fmtMeters(metersFromKg(c.acceptedKg, batchGramPerMeter(batch)))} m`, C.green)}
+            {cell('REJECTED LENGTH', `${fmtMeters(metersFromKg(c.rejectedKg, batchGramPerMeter(batch)))} m`, c.rejectedKg ? C.red : C.ink)}
           </>}
           {c.rejectReason && <div style={{ fontSize: 12, color: C.subtext, alignSelf: 'flex-end' }}>Reason: {c.rejectReason}</div>}
         </div>
       ) : (
         <div>
-          <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={c.inputKg} route={batch.route} gm={calcGramPerMeter(batch.targetOD, batch.targetThickness)} />
+          <CoilFields rec={rec} setRec={setRec} errors={errors} basketKg={c.inputKg} route={batch.route} gm={batchGramPerMeter(batch)} />
           <ErrNote err={err} />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <Button onClick={() => { const r = onSave(batch.id, rec); if (r?.error) { setErr(r.errors ? '' : r.error); setErrors(r.errors || null); } else setEditing(false); }}>Save coil record</Button>
@@ -11621,7 +12450,7 @@ function sanitizeMaster(m) {
   const o = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
   const a = (v) => (Array.isArray(v) ? v : []);
   const x = o(m);
-  return { ...x, version: 1, lists: o(x.lists), history: a(x.history), access: o(x.access), customerLinks: o(x.customerLinks), customers: a(x.customers).filter(c => c && typeof c === 'object' && c.name), capacities: o(x.capacities), sizes: a(x.sizes).filter(z => z && typeof z === 'object'), standards: a(x.standards).filter(z => z && typeof z === 'object' && z.id && STANDARD_STAGES.includes(z.stage) && z.name), standardRequired: o(x.standardRequired) };
+  return { ...x, version: 1, lists: o(x.lists), history: a(x.history), access: o(x.access), customerLinks: o(x.customerLinks), customers: a(x.customers).filter(c => c && typeof c === 'object' && c.name), capacities: o(x.capacities), sizes: a(x.sizes).filter(z => z && typeof z === 'object'), standards: a(x.standards).filter(z => z && typeof z === 'object' && z.id && STANDARD_STAGES.includes(z.stage) && z.name), standardRequired: o(x.standardRequired), toleranceLocked: o(x.toleranceLocked) };
 }
 // scrap / rejection reasons offered at a stage: LWC gets its own defect list
 function scrapReasonsFor(stageLabel) { return stageLabel === 'LWC' ? [...lwcDefects(), 'Crop / end-cut loss'] : scrapReasons(); }
@@ -12029,6 +12858,20 @@ function dispatchCandidates(order, batches) {
 // Imported finished stock (category "Imported LWC" / "Imported PCC") of the same size and type as the order
 // can be dispatched too. It has no production order behind it: the delivery line names the stock item.
 const isImportedItem = (f) => /^Imported /.test(f?.category || '');
+// Adds incoming finished-goods rows into stock: a size that is already there (same category and size) gets the quantity ADDED to its row; only a new size makes a new row.
+function mergeIntoFinished(existing, incoming, newId = uid) {
+  let list = [...(existing || [])], added = 0, merged = 0;
+  (incoming || []).forEach(it => {
+    const key = specKey(normalizeSpec(it.spec));
+    const i = list.findIndex(f => specKey(normalizeSpec(f.spec)) === key && (f.unit || 'kg') === (it.unit || 'kg') && (!f.category || !it.category || f.category === it.category));
+    if (i >= 0) {
+      const f = list[i];
+      list[i] = { ...f, qty: round3(Number(f.qty || 0) + Number(it.qty || 0)), category: f.category || it.category || null, altUnit: f.altUnit || it.altUnit || null, altQty: round3((Number(f.altQty) || 0) + (Number(it.altQty) || 0)) };
+      merged += 1;
+    } else { list.push({ ...it, id: it.id || newId() }); added += 1; }
+  });
+  return { list, added, merged };
+}
 function importedCandidates(order, finishedItems) {
   if (!order || !['LWC', 'PCC'].includes(order.productType) || !order.spec) return [];
   return (finishedItems || []).filter(f => f.category === `Imported ${order.productType}` && specKey(f.spec) === specKey(order.spec) && Number(f.qty) > 0);
@@ -12050,6 +12893,7 @@ function DeliveryForm({ orders, batches, finishedItems, preset, onPost, onClose 
   const [ik, setIk] = useState({});
   const [iu, setIu] = useState({});
   const pending = order ? orderPendingQty(order) : 0;
+  const maxQty = order ? orderMaxDispatchQty(order) : 0;
   const inKg = !order || order.unit === 'kg';
   const otherUom = order && ['boxes', 'meters'].includes(order.unit);   // quantity and weight are entered separately
   const total = cands.reduce((s, b) => s + (Number(qtys[b.id]) || 0), 0) + imps.reduce((s, i) => s + (Number(iq[i.id]) || 0), 0);
@@ -12096,7 +12940,7 @@ function DeliveryForm({ orders, batches, finishedItems, preset, onPost, onClose 
       {order && (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 12.5, color: C.subtext, marginBottom: 6 }}>
-            {order.location ? `${order.location} · ` : ''}Ordered {fmtQty(order.qty, order.unit)} · already dispatched {fmtQty(orderDispatchedQty(order), order.unit)} · <strong style={{ color: C.ink }}>pending {fmtQty(pending, order.unit)}</strong>
+            {order.location ? `${order.location} · ` : ''}Ordered {fmtQty(order.qty, order.unit)} · already dispatched {fmtQty(orderDispatchedQty(order), order.unit)} · <strong style={{ color: C.ink }}>pending {fmtQty(pending, order.unit)}</strong>{toleranceFor(order.unit) > 0 && <span> · tolerance ±{toleranceFor(order.unit)} kg (max {fmtQty(maxQty, order.unit)})</span>}
           </div>
           {otherUom && <p data-testid="uom-note" style={{ fontSize: 12, color: C.subtext, marginBottom: 6 }}>This order is in {order.unit}, production is in kg: enter the {order.unit} dispatched <em>and</em> the weight in kg taken from each production order.</p>}
           {cands.length === 0 && imps.length === 0 ? (
@@ -12146,7 +12990,7 @@ function DeliveryForm({ orders, batches, finishedItems, preset, onPost, onClose 
                 {canFill && <Button variant="secondary" onClick={autoFill}>Fill up to pending</Button>}
                 <Button disabled={!(total > 0)} onClick={submit}>Post delivery ({fmtQty(total, order.unit)}{otherUom && totalKg > 0 ? ` · ${fmtQty(totalKg, 'kg')}` : ''})</Button>
               </div>
-              {total > 0 && <p style={{ fontSize: 12, color: total > pending ? C.red : C.subtext, marginTop: 8 }}>After this delivery: {fmtQty(Math.max(0, pending - total), order.unit)} pending{total < pending ? ' — can be short closed later if no more is coming.' : '.'}</p>}
+              {total > 0 && <p style={{ fontSize: 12, color: total > maxQty + 1e-9 ? C.red : C.subtext, marginTop: 8 }}>After this delivery: {isFullyDispatched(order.qty, orderDispatchedQty(order) + total, order.unit) ? '0 pending' : `${fmtQty(Math.max(0, pending - total), order.unit)} pending`}{total > pending + 1e-9 && total <= maxQty + 1e-9 ? ` — ${fmtQty(total - pending, order.unit)} over the order, within the ±${toleranceFor(order.unit)} kg tolerance.` : isFullyDispatched(order.qty, orderDispatchedQty(order) + total, order.unit) ? ' — order will be fully dispatched (within ±100 kg tolerance).' : ' — can be short closed later if no more is coming.'}</p>}
             </>
           )}
         </div>
@@ -12500,6 +13344,7 @@ const NAV_GROUPS = [
       { key: 'quality', label: 'Quality Release', icon: ClipboardCheck },
       { key: 'qchold', label: 'QC Hold Section', icon: AlertOctagon },
       { key: 'qmlots', label: 'Inspection Lots (QM)', icon: ListChecks },
+      { key: 'lab', label: 'Lab & Mechanical', icon: Activity, roles: ['Admin', 'Quality', 'Owner', 'Manager', 'Assistant Manager', 'Melting Supervisor'] },
       { key: 'spc', label: 'SPC', icon: Activity },
       { key: 'capa', label: 'CAPA', icon: ShieldCheck },
     ],
@@ -12520,6 +13365,7 @@ const NAV_GROUPS = [
       { key: 'skills', label: 'Skill Matrix', icon: GraduationCap },
       { key: 'kaizen', label: 'Kaizen', icon: Lightbulb },
       { key: 'inventory', label: 'Inventory', icon: Boxes },
+      { key: 'cyclecount', label: 'Cycle Count', icon: ScanLine, roles: ['Admin', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Owner'] },
       { key: 'matdocs', label: 'Material Documents', icon: FileSpreadsheet },
     ],
   },
@@ -12560,6 +13406,8 @@ const ACTION_FEATURES = [
   { key: 'inventory.adjust', group: 'Inventory', label: 'Adjust inventory quantities and material classification', rule: r => ['Store', 'RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
   { key: 'inventory.delete', group: 'Inventory', label: 'Delete inventory records', rule: r => ['Admin'].includes(r) },
   { key: 'inventory.import', group: 'Inventory', label: 'Import finished-goods inventory from Excel', rule: r => ['Store', 'RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
+  { key: 'stock.count', group: 'Inventory', label: 'Run cycle counts (scan labels and count stock)', rule: r => ['Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
+  { key: 'stock.approve', group: 'Inventory', label: 'Approve cycle-count differences (posts to inventory)', rule: r => ['RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
   { key: 'melting.cast', group: 'Planning & production', label: 'Cast a heat and edit shells', rule: r => r === 'Melting Supervisor' || isProductionManager(r) || isManagerRole(r) },
   { key: 'cascade.act', group: 'Planning & production', label: 'Finish baskets at Cascade', rule: r => r === 'Cascade Operator' || isProductionManager(r) || isManagerRole(r) },
   { key: 'spinner.act', group: 'Planning & production', label: 'Request baskets and run the Spinner gate', rule: r => r === 'Spinner Supervisor' || isProductionManager(r) || isManagerRole(r) },
@@ -12569,6 +13417,7 @@ const ACTION_FEATURES = [
   { key: 'po.logActual', group: 'Planning & production', label: 'Log production actuals', rule: r => isProductionManager(r) || STATION_ROLES.includes(r) },
   { key: 'annealing.act', group: 'Planning & production', label: 'Annealing: pull into pots, pot in / out', rule: r => r === 'Annealing' || isManagerRole(r) },
   { key: 'packing.act', group: 'Planning & production', label: 'Packing: pull and pack', rule: r => r === 'Packing' || isManagerRole(r) },
+  { key: 'lab.enter', group: 'Quality', label: 'Enter lab results (Spectro chemistry, tensile / yield / elongation / hardness)', rule: r => r === 'Quality' || r === 'Admin' },
   { key: 'quality.release', group: 'Quality', label: 'Release or hold packed material (usage decision)', rule: r => r === 'Quality' || isManagerRole(r) },
   { key: 'hold.put', group: 'Quality', label: 'Put an LWC basket on hold', rule: r => rMach(r) || r === 'Quality' },
   { key: 'hold.decide', group: 'Quality', label: 'Decide on a held basket (release, reject, downsize)', rule: r => r === 'Quality' || r === 'Admin' },
@@ -12784,13 +13633,26 @@ function standardsFor(list, stage) { return (list || []).filter(x => x.stage ===
 // the standard whose size text equals this size (same normalisation as everywhere else); null when none says so
 function standardForSpec(stds, spec) { const k = spec && String(spec).trim() ? specKey(normalizeSpec(spec)) : ''; return k ? ((stds || []).find(x => x.spec && specKey(normalizeSpec(x.spec)) === k) || null) : null; }
 // What a stage may record: with standards defined the posted standardId must be one of them and the targets and tolerances ARE the standard's, whatever was posted.
-function resolveStandard(master, stage, data) {
+function resolveStandard(master, stage, data, role) {
   const stds = standardsFor(master?.standards, stage);
   const required = !!((master?.standardRequired) || {})[stage];
   if (!stds.length) return required ? { error: `The Admin has not defined a standard for ${stage} yet — one is required before a pass can be recorded.` } : { data, standard: null };
   const std = stds.find(x => x.id === data.standardId);
   if (!std) return { error: `Choose the standard for ${stage}.` };
-  return { standard: std, data: { ...data, targetOD: std.od, toleranceOD: std.odTol, targetThickness: std.thk, toleranceThickness: std.thkTol, standardId: std.id, standardName: std.name } };
+  const tolLocked = !!((master?.toleranceLocked) || {})[stage];
+  const num = (v) => (v === '' || v == null ? NaN : Number(v));
+  // Spinner: the target is the planned size the supervisor confirmed (it matches the standard's size)
+  const planned = stage === 'Spinner' && num(data.targetOD) > 0 && num(data.targetThickness) > 0;
+  const tOD = planned ? Number(data.targetOD) : std.od, tThk = planned ? Number(data.targetThickness) : std.thk;
+  // tolerance: the standard's when the Admin locked it, otherwise what the supervisor entered
+  let tolOD = std.odTol, tolThk = std.thkTol;
+  // Rolling / Cascade tolerances change only in Master; at the Spinner only the Admin can change it, and only while it is not locked
+  const canEditTol = role === 'Admin' && stage === 'Spinner' && !tolLocked;
+  if (canEditTol && (data.toleranceOD !== undefined || data.toleranceThickness !== undefined)) {
+    if (!(num(data.toleranceOD) > 0) || !(num(data.toleranceThickness) > 0)) return { error: 'Enter the OD and thickness tolerance (more than 0).' };
+    tolOD = Number(data.toleranceOD); tolThk = Number(data.toleranceThickness);
+  }
+  return { standard: std, data: { ...data, targetOD: tOD, toleranceOD: tolOD, targetThickness: tThk, toleranceThickness: tolThk, standardId: std.id, standardName: std.name } };
 }
 // ---- Annealing pots with several sizes: summaries, fill against the pot capacity, which orders really went in, grouping for Packing ----
 // items = charge items ({ spec, qty, unit, ... }); one line per size, quantities added up per unit
@@ -13256,6 +14118,10 @@ export default function App() {
   const [toolingItems, setToolingItems] = useState(DEFAULT_DIES);
   const toolingRef = useRef(DEFAULT_DIES); toolingRef.current = toolingItems;   // latest tooling list for handlers that must not wait for a re-render
   const [energyLogs, setEnergyLogs] = useState([]);
+  const [labResults, setLabResults] = useState([]);
+  const labRef = useRef([]); labRef.current = labResults;
+  const [cycleCounts, setCycleCounts] = useState([]);
+  const ccRef = useRef([]); ccRef.current = cycleCounts;
   const [pmTasks, setPmTasks] = useState([]);
   const [bom, setBom] = useState([]);
   const [matDocs, setMatDocs] = useState([]);
@@ -13385,10 +14251,12 @@ export default function App() {
     if (!user) return;
     let cancelled = false;
     (async () => {
-      const [td, el] = await Promise.all([loadShared(KEYS.tooling, DEFAULT_DIES), loadShared(KEYS.machineEnergy, [])]);
+      const [td, el, lb, cc] = await Promise.all([loadShared(KEYS.tooling, DEFAULT_DIES), loadShared(KEYS.machineEnergy, []), loadShared(KEYS.lab, []), loadShared(KEYS.cycleCounts, [])]);
       if (cancelled) return;
       if (!shouldSkipLoad(KEYS.tooling)) setToolingItems(Array.isArray(td) ? td : DEFAULT_DIES);
       if (!shouldSkipLoad(KEYS.machineEnergy)) setEnergyLogs(Array.isArray(el) ? el : []);
+      if (!shouldSkipLoad(KEYS.lab)) setLabResults(Array.isArray(lb) ? lb : []);
+      if (!shouldSkipLoad(KEYS.cycleCounts)) setCycleCounts(Array.isArray(cc) ? cc : []);
     })();
     return () => { cancelled = true; };
   }, [user]);
@@ -13486,7 +14354,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
   const planMetaRef = useRef({}); planMetaRef.current = planMeta;
   const dispatchPlansRef = useRef({}); dispatchPlansRef.current = dispatchPlans;
   const commitOrders = (next) => { ordersRef.current = next; setOrders(next); saveShared(KEYS.orders, next); };
-  const commitBatches = (next) => { batchesRef.current = next; setBatches(next); saveShared(KEYS.batches, next); const linkedOrderIds = [...new Set((next || []).filter(b => b.orderId && b.productionOrderNo).map(b => b.orderId))]; if (linkedOrderIds.length) { const current = ordersRef.current || []; let changed = false; const nextOrders = current.map(o => { if (linkedOrderIds.includes(o.id) && !['In Production', 'Dispatched', 'Complete', 'Cancelled', 'Closed'].includes(o.status)) { changed = true; return { ...o, status: 'In Production' }; } return o; }); if (changed) { ordersRef.current = nextOrders; setOrders(nextOrders); saveShared(KEYS.orders, nextOrders); nextOrders.filter(o => linkedOrderIds.includes(o.id) && o.status === 'In Production').forEach(o => syncOrderTracking(o)); } } };
+  const commitBatches = (next) => { batchesRef.current = next; setBatches(next); saveShared(KEYS.batches, next); const linkedOrderIds = [...new Set((next || []).filter(b => b.orderId && b.productionOrderNo).map(b => b.orderId))]; if (linkedOrderIds.length) { const current = ordersRef.current || []; let changed = false; const nextOrders = current.map(o => { if (linkedOrderIds.includes(o.id) && o.status === 'New') { changed = true; return { ...o, status: 'In Production' }; } return o; }); if (changed) { ordersRef.current = nextOrders; setOrders(nextOrders); saveShared(KEYS.orders, nextOrders); nextOrders.filter(o => linkedOrderIds.includes(o.id) && o.status === 'In Production').forEach(o => syncOrderTracking(o)); } } };
   const commitDeliveries = (next) => { deliveriesRef.current = next; setDeliveries(next); saveShared(KEYS.deliveries, next); };
   const commitHeats = (next) => { heatsRef.current = next; setHeats(next); saveShared(KEYS.heats, next); };
   const commitCharges = (next) => { chargesRef.current = next; setAnnealCharges(next); saveShared(KEYS.annealCharges, next); };
@@ -13637,6 +14505,19 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     return next;
   });
   // ---- Machine-wise energy: accepts one reading or an array; one reading per machine per date (latest wins) ----
+  const addLabResult = (rec) => {
+    if (!canDo(user.role, 'lab.enter')) return { error: 'Only the Quality team can enter lab results.' };
+    const row = { ...rec, id: uid(), at: new Date().toISOString(), testedBy: user.name };
+    const next = [...labRef.current, row]; labRef.current = next; setLabResults(next); saveShared(KEYS.lab, next);
+    logAudit({ actor: user.name, action: 'create', entityType: 'lab_result', entityId: row.id, details: { kind: row.kind, heatId: row.heatId, batchId: row.batchId } });
+    return { ok: true };
+  };
+  const deleteLabResult = (id) => {
+    if (user.role !== 'Admin') return { error: 'Only the Admin can delete lab results.' };
+    const next = labRef.current.filter(r => r.id !== id); labRef.current = next; setLabResults(next); saveShared(KEYS.lab, next);
+    logAudit({ actor: user.name, action: 'delete', entityType: 'lab_result', entityId: id });
+    return { ok: true };
+  };
   const logMachineEnergy = (logs) => setEnergyLogs(prev => {
     const incoming = (Array.isArray(logs) ? logs : [logs]).map(l => ({ ...l, loggedBy: user.name, loggedAt: new Date().toISOString() }));
     const next = [...prev.filter(p => !incoming.some(n => n.date === p.date && n.machineId === p.machineId)), ...incoming];
@@ -13716,7 +14597,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
   // ---- Preventive maintenance ----
   const addPmTask = (task) => setPmTasks(prev => { const next = [...prev, task]; saveShared(KEYS.pmTasks, next); return next; });
   const markPmDone = (id, actingUser) => setPmTasks(prev => {
-    const next = prev.map(t => t.id === id ? { ...t, lastDoneDate: todayKey(), lastDoneBy: actingUser.name } : t);
+    const next = prev.map(t => t.id === id ? { ...t, lastDoneDate: todayKey(), lastDoneAt: new Date().toISOString(), lastDoneBy: actingUser.name } : t);
     saveShared(KEYS.pmTasks, next); return next;
   });
   const deletePmTask = (id) => setPmTasks(prev => {
@@ -13819,7 +14700,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
   // order, annealing need and packing station all come from that line.
   const setBatchRoute = (id, args, user) => {
     if (!canActSpinner(user.role)) return { error: 'Only the Spinner Supervisor, the Production Manager or a Manager can confirm the planned size at the Spinner.' };
-    const rs = resolveStandard(masterRefData.current, 'Spinner', args);
+    const rs = resolveStandard(masterRefData.current, 'Spinner', args, user.role);
     if (rs.error) return { error: rs.error };
     const { planDate, planLineId, targetOD, toleranceOD, actualOD, targetThickness, toleranceThickness, actualThickness, passLogs, dieId, dieMeters } = rs.data;
     const line = (spinnerPlansRef.current[planDate] || []).find(l => l.id === planLineId);
@@ -13875,7 +14756,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
   // INSPECTION LOT (own number) closed by a USAGE DECISION: Accept (A, moves on) or Rework (R,
   // the ENTIRE lot goes to rework under a rework order and must be re-inspected under a new lot).
   const logPass = (batchId, stage, data, user) => {
-    const rs = resolveStandard(masterRefData.current, stage, data);
+    const rs = resolveStandard(masterRefData.current, stage, data, user.role);
     if (rs.error) return { error: rs.error };
     data = rs.data;
     const { targetOD, toleranceOD, actualOD, targetThickness, toleranceThickness, actualThickness, scrapQty, scrapReason, machine, decision = 'Accept', reason = '', note = '' } = data;
@@ -14090,6 +14971,15 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     logAudit({ actor: user.name, action: 'master_standard_required', entityType: 'master', entityId: stage, details: { to: !!value } });
     return { ok: true, changed: 1 };
   };
+  const saveToleranceLocked = (stage, value) => {
+    if (user.role !== 'Admin') return { error: MASTER_ADMIN_ONLY };
+    if (!STANDARD_STAGES.includes(stage)) return { error: 'Unknown stage.' };
+    const before = !!((masterRefData.current || {}).toleranceLocked || {})[stage];
+    if (before === !!value) return { ok: true, changed: 0 };
+    commitMaster(prev => ({ ...withHistory(prev, [{ section: 'standards', field: `${stage} · tolerance locked`, from: before ? 'yes' : 'no', to: value ? 'yes' : 'no' }]), toleranceLocked: { ...(prev.toleranceLocked || {}), [stage]: !!value } }));
+    logAudit({ actor: user.name, action: 'master_tolerance_locked', entityType: 'master', entityId: stage, details: { to: !!value } });
+    return { ok: true, changed: 1 };
+  };
   const addMasterFromForm = ({ customer, location, size }) => {
     if (!canDo(user.role, 'master.add')) return { error: 'You do not have access to add to Master.' };
     const m = masterRefData.current || {}; let customers = m.customers || [], sizes = m.sizes || []; const changes = [];
@@ -14252,8 +15142,8 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       });
     }
   };
-  const addFinished = (item) => { const next = [...finishedRef.current, item]; finishedRef.current = next; setFinishedItems(next); saveShared(KEYS.finished, next); };
-  const addFinishedBatch = (items) => { if (!Array.isArray(items) || !items.length) return; const next = [...finishedRef.current, ...items]; finishedRef.current = next; setFinishedItems(next); saveShared(KEYS.finished, next); };
+  const addFinished = (item) => { const { list: next } = mergeIntoFinished(finishedRef.current, [item]); finishedRef.current = next; setFinishedItems(next); saveShared(KEYS.finished, next); };
+  const addFinishedBatch = (items) => { if (!Array.isArray(items) || !items.length) return null; const { list: next, added, merged } = mergeIntoFinished(finishedRef.current, items); finishedRef.current = next; setFinishedItems(next); saveShared(KEYS.finished, next); return { added, merged }; };
   const deleteFinished = (id) => { const item = finishedRef.current.find(r => r.id === id); const next = finishedRef.current.filter(r => r.id !== id); finishedRef.current = next; setFinishedItems(next); saveShared(KEYS.finished, next); if (item) logAudit({ actor: user?.name || 'Unknown', action: 'inventory_delete', entityType: 'finished_goods', entityId: id, details: { spec: item.spec, category: item.category, qty: item.qty, unit: item.unit } }); };
   // Imported stock leaves by its own id (kg and pallets / boxes), with the same 601 goods-issue document.
   const issueImported = (item, kg, units, refDoc) => {
@@ -14285,6 +15175,105 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
         refDoc: opts.refDoc || null,
       });
     }
+  };
+
+  /* ===================================================================
+     CYCLE COUNTING (inventory auditing)
+     =================================================================== */
+  const commitCounts = (next) => { ccRef.current = next; setCycleCounts(next); saveShared(KEYS.cycleCounts, next); };
+  const itemsOf = (type) => (type === 'raw' ? rawItemsRef.current : finishedRef.current);
+  const startCycleCount = ({ scope, tolerancePct, note }) => {
+    if (!canDo(user.role, 'stock.count')) return { error: 'Your role cannot run cycle counts.' };
+    if (ccRef.current.some(s => s.status === 'Open' || s.status === 'Review')) return { error: 'A count is already in progress. Finish or cancel it first.' };
+    if (!['All stock', 'Raw materials', 'Finished goods'].includes(scope)) return { error: 'Choose what to count.' };
+    const tol = Number(tolerancePct);
+    if (!(tol >= 0) || tol > 50) return { error: 'The tolerance must be between 0 and 50 %.' };
+    const day = todayKey().replace(/-/g, '');
+    const n = ccRef.current.filter(x => String(x.no).includes(day)).length + 1;
+    const sess = { id: uid(), no: `CC-${day}-${String(n).padStart(2, '0')}`, scope, tolerancePct: tol, note: String(note || '').trim(), status: 'Open', createdAt: new Date().toISOString(), createdBy: user.name, lines: [] };
+    commitCounts([...ccRef.current, sess]);
+    logAudit({ actor: user.name, action: 'create', entityType: 'cycle_count', entityId: sess.no, details: { scope } });
+    return { ok: true };
+  };
+  const saveCountLine = (sessionId, type, itemId, qty, alt, note) => {
+    if (!canDo(user.role, 'stock.count')) return { error: 'Your role cannot count stock.' };
+    const sess = ccRef.current.find(x => x.id === sessionId);
+    if (!sess || sess.status !== 'Open') return { error: 'This count is not open for counting.' };
+    const item = itemsOf(type).find(i => i.id === itemId);
+    if (!item) return { error: 'That stock item no longer exists.' };
+    if (!countScopeItems(sess, rawItemsRef.current, finishedRef.current).some(x => x.type === type && x.item.id === itemId)) return { error: 'That item is outside this count.' };
+    const old = (sess.lines || []).find(l => l.key === `${type}:${itemId}`);
+    if (old && (old.status === 'approved' || old.status === 'matched')) return { error: 'This item was already confirmed in this count.' };
+    commitCounts(ccRef.current.map(x => x.id === sessionId ? upsertCountLine(x, makeCountLine(type, item, qty, alt, note, user.name)) : x));
+    return { ok: true };
+  };
+  const removeCountLine = (sessionId, key) => {
+    const sess = ccRef.current.find(x => x.id === sessionId);
+    if (!sess || sess.status !== 'Open') return { error: 'This count is not open.' };
+    commitCounts(ccRef.current.map(x => x.id === sessionId ? { ...x, lines: (x.lines || []).filter(l => l.key !== key || l.status === 'approved' || l.status === 'matched') } : x));
+    return { ok: true };
+  };
+  const submitCount = (sessionId) => {
+    const sess = ccRef.current.find(x => x.id === sessionId);
+    if (!sess || sess.status !== 'Open') return { error: 'This count is not open.' };
+    if (!(sess.lines || []).length) return { error: 'Count at least one item first.' };
+    const redo = (sess.lines || []).filter(l => l.status === 'recount').length;
+    if (redo) return { error: `${redo} item${redo > 1 ? 's were' : ' was'} sent back for a recount — scan and count ${redo > 1 ? 'them' : 'it'} again first.` };
+    commitCounts(ccRef.current.map(x => x.id === sessionId ? { ...x, status: 'Review', submittedAt: new Date().toISOString(), submittedBy: user.name } : x));
+    return { ok: true };
+  };
+  // Posts a counted difference to the stock that is on the shelf now, as a 701 / 702 material document. No consumption record is written.
+  const applyCountAdjustment = (type, id, dQty, dAlt, refNo) => {
+    const material = itemsOf(type).find(r => r.id === id);
+    if (!material) return false;
+    if (type === 'raw') {
+      const next = rawItemsRef.current.map(r => r.id === id ? { ...r, qty: Math.max(0, round3(Number(r.qty) + dQty)) } : r);
+      rawItemsRef.current = next; setRawItems(next); saveShared(KEYS.raw, next);
+    } else {
+      const next = finishedRef.current.map(r => r.id === id ? { ...r, qty: Math.max(0, round3(Number(r.qty) + dQty)), altQty: Math.max(0, (Number(r.altQty) || 0) + dAlt), altUnit: r.altUnit || fgAltUnit(r.category) } : r);
+      finishedRef.current = next; setFinishedItems(next); saveShared(KEYS.finished, next);
+    }
+    if (dQty !== 0) postMaterialDocument({ movementType: dQty > 0 ? '701' : '702', materialNumber: type === 'raw' ? materialNumberForRaw(material.name) : materialNumberForSpec(material.spec), materialName: type === 'raw' ? material.name : material.spec, quantity: dQty, unit: material.unit || 'kg', storageLocation: type === 'raw' ? 'RM01' : 'FG01', refDoc: refNo });
+    return true;
+  };
+  const decideCountLine = (sessionId, key, decision) => {
+    if (!canDo(user.role, 'stock.approve')) return { error: 'Your role cannot approve count differences.' };
+    const sess = ccRef.current.find(x => x.id === sessionId);
+    if (!sess || sess.status !== 'Review') return { error: 'This count is not awaiting approval.' };
+    const line = (sess.lines || []).find(l => l.key === key);
+    if (!line || line.status !== 'counted') return { error: 'That line is not waiting for a decision.' };
+    if (line.countedBy === user.name && user.role !== 'Admin') return { error: 'You counted this item — another person must approve it.' };
+    const now = new Date().toISOString();
+    if (decision === 'recount') {
+      commitCounts(ccRef.current.map(x => x.id === sessionId ? { ...x, status: 'Open', lines: x.lines.map(l => l.key === key ? { ...l, status: 'recount', decidedBy: user.name, decidedAt: now } : l) } : x));
+      logAudit({ actor: user.name, action: 'cycle_count_recount', entityType: 'cycle_count', entityId: sess.no, details: { item: line.label } });
+      return { ok: true };
+    }
+    const cur = itemsOf(line.itemType).find(i => i.id === line.itemId);
+    if (!cur) return { error: 'That stock item no longer exists.' };
+    const st = settleCountLine(line, cur);
+    if (!st.matched) applyCountAdjustment(line.itemType, line.itemId, st.dQty, st.dAlt, sess.no);
+    commitCounts(ccRef.current.map(x => x.id === sessionId ? { ...x, lines: x.lines.map(l => l.key === key ? { ...l, status: st.matched ? 'matched' : 'approved', decidedBy: user.name, decidedAt: now, postedQty: st.dQty, postedAlt: st.dAlt, movedQty: st.moved } : l) } : x));
+    if (!st.matched) logAudit({ actor: user.name, action: 'cycle_count_post', entityType: 'stock', entityId: key, details: { count: sess.no, item: line.label, difference: st.dQty, altDifference: st.dAlt } });
+    return { ok: true };
+  };
+  const closeCount = (sessionId) => {
+    if (!canDo(user.role, 'stock.approve')) return { error: 'Your role cannot close counts.' };
+    const sess = ccRef.current.find(x => x.id === sessionId);
+    if (!sess || sess.status !== 'Review') return { error: 'This count is not awaiting approval.' };
+    if ((sess.lines || []).some(l => l.status === 'counted' || l.status === 'recount')) return { error: 'Decide every counted line first (approve or recount).' };
+    const pr = countProgress(sess, rawItemsRef.current, finishedRef.current);
+    commitCounts(ccRef.current.map(x => x.id === sessionId ? { ...x, status: 'Closed', closedAt: new Date().toISOString(), closedBy: user.name, coveragePct: pr.total ? Math.round((pr.counted / pr.total) * 100) : 100 } : x));
+    logAudit({ actor: user.name, action: 'close', entityType: 'cycle_count', entityId: sess.no, details: { counted: pr.counted, total: pr.total } });
+    return { ok: true };
+  };
+  const cancelCount = (sessionId) => {
+    if (!canDo(user.role, 'stock.approve')) return { error: 'Your role cannot cancel counts.' };
+    const sess = ccRef.current.find(x => x.id === sessionId);
+    if (!sess || (sess.status !== 'Open' && sess.status !== 'Review')) return { error: 'This count is already finished.' };
+    commitCounts(ccRef.current.map(x => x.id === sessionId ? { ...x, status: 'Cancelled', closedAt: new Date().toISOString(), closedBy: user.name } : x));
+    logAudit({ actor: user.name, action: 'cancel', entityType: 'cycle_count', entityId: sess.no });
+    return { ok: true };
   };
 
   /* ===================================================================
@@ -14340,7 +15329,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     const qty = Number(plannedQty);
     if (!(qty > 0)) return { error: 'Enter the quantity to dispatch.' };
     if (isOrderClosed(o)) return { error: 'That order is already closed.' };
-    if (qty > orderPendingQty(o) + 1e-9) return { error: `Only ${fmtQty(orderPendingQty(o), o.unit)} is still pending on that order.` };
+    if (qty > orderMaxDispatchQty(o) + 1e-9) return { error: `Only ${fmtQty(orderMaxDispatchQty(o), o.unit)} can still be dispatched on that order (incl. tolerance).` };
     const existing = dispatchPlansRef.current[date] || [];
     if (existing.some(l => l.orderId === orderId)) return { error: 'That order is already in the dispatch plan for this day.' };
     const line = { id: uid(), orderId, plannedQty: qty, unit: o.unit, notes: notes || '', addedBy: user.name, addedAt: new Date().toISOString() };
@@ -14420,11 +15409,11 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     let coilRec = null, scrapAdd = [];
     const inputKg = batchNetQty(b);
     if (COIL_ROUTES.includes(b.route)) {
-      const v = validateCoilRecord(coils || {}, inputKg);
+      const v = validateCoilRecord(coils || {}, inputKg, b.route);
       if (!v.valid) return { error: Object.values(v.errors)[0], errors: v.errors };
       const n = (k) => Number(coils[k]);
       coilRec = { made: n('made'), accepted: n('accepted'), rejected: n('rejected'), acceptedKg: round3(n('acceptedKg')), rejectedKg: round3(n('rejectedKg')), rejectReason: n('rejected') > 0 ? coils.rejectReason : '', inputKg: round3(inputKg), lossKg: v.lossKg, recordedAt: new Date().toISOString(), recordedBy: user.name };
-      if (coilRec.rejectedKg > 0) scrapAdd.push({ id: uid(), stage: b.route, qty: coilRec.rejectedKg, reason: coilRec.rejectReason, actionTaken: `${coilRec.rejected} rejected coil${coilRec.rejected > 1 ? 's' : ''}`, auto: 'coil', at: iso, by: user.name });
+      if (coilRec.rejectedKg > 0) scrapAdd.push({ id: uid(), stage: b.route, qty: coilRec.rejectedKg, reason: coilRec.rejectReason, actionTaken: `${coilRec.rejected} rejected ${b.route === 'CTL' ? 'piece' : 'coil'}${coilRec.rejected > 1 ? 's' : ''}`, auto: 'coil', at: iso, by: user.name });
       if (coilRec.lossKg > 0) scrapAdd.push({ id: uid(), stage: b.route, qty: coilRec.lossKg, reason: 'Crop / end-cut loss', actionTaken: 'Process loss at the machine', auto: 'coil', at: iso, by: user.name });
     }
     patchBatches([id], x => ({
@@ -14435,7 +15424,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
         machine: { ...x.flow.machine, endedAt: iso, finishedBy: user.name, ...(coilRec ? { coils: coilRec } : {}) },
         ...(toAnnealing ? { annealReadyAt: iso, annealReadyBy: user.name } : { packReadyAt: iso, packReadyBy: user.name }),
       },
-      history: [...x.history, histEntry(x, `${coilRec ? `Run finished — ${coilRec.made} coils (${coilRec.accepted} accepted ${fmtQty(coilRec.acceptedKg, 'kg')}, ${coilRec.rejected} rejected ${fmtQty(coilRec.rejectedKg, 'kg')}) — ` : 'Run finished — '}${toAnnealing ? 'Annealing informed' : 'Packing informed'}`, iso)],
+      history: [...x.history, histEntry(x, `${coilRec ? `Run finished — ${coilRec.made} ${coilWord(b.route)} (${coilRec.accepted} accepted ${fmtQty(coilRec.acceptedKg, 'kg')}, ${coilRec.rejected} rejected ${fmtQty(coilRec.rejectedKg, 'kg')}) — ` : 'Run finished — '}${toAnnealing ? 'Annealing informed' : 'Packing informed'}`, iso)],
     }));
     const outKg = coilRec ? coilRec.acceptedKg : inputKg;
     notifyRoles([toAnnealing ? 'Annealing' : 'Packing'],
@@ -14449,14 +15438,14 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     if (!b || !coilEditable(b)) return { error: 'The coil record can only be changed while the basket is still waiting in the machine output buffer.' };
     if (!canRecordCoils(user.role)) return { error: 'Only Production, Quality or a Manager can change the coil record.' };
     const old = b.flow.machine.coils;
-    const v = validateCoilRecord(coils || {}, old.inputKg);
+    const v = validateCoilRecord(coils || {}, old.inputKg, b.route);
     if (!v.valid) return { error: Object.values(v.errors)[0], errors: v.errors };
     const n = (k) => Number(coils[k]);
     const nowIso = new Date().toISOString();
     const rec = { ...old, made: n('made'), accepted: n('accepted'), rejected: n('rejected'), acceptedKg: round3(n('acceptedKg')), rejectedKg: round3(n('rejectedKg')), rejectReason: n('rejected') > 0 ? coils.rejectReason : '', lossKg: v.lossKg, correctedAt: nowIso, correctedBy: user.name };
     const keep = (b.scrapLog || []).filter(r => r.auto !== 'coil');
     const add = [];
-    if (rec.rejectedKg > 0) add.push({ id: uid(), stage: b.route, qty: rec.rejectedKg, reason: rec.rejectReason, actionTaken: `${rec.rejected} rejected coil${rec.rejected > 1 ? 's' : ''}`, auto: 'coil', at: old.recordedAt, by: user.name });
+    if (rec.rejectedKg > 0) add.push({ id: uid(), stage: b.route, qty: rec.rejectedKg, reason: rec.rejectReason, actionTaken: `${rec.rejected} rejected ${b.route === 'CTL' ? 'piece' : 'coil'}${rec.rejected > 1 ? 's' : ''}`, auto: 'coil', at: old.recordedAt, by: user.name });
     if (rec.lossKg > 0) add.push({ id: uid(), stage: b.route, qty: rec.lossKg, reason: 'Crop / end-cut loss', actionTaken: 'Process loss at the machine', auto: 'coil', at: old.recordedAt, by: user.name });
     patchBatches([id], x => ({ ...x, scrapLog: [...keep, ...add], flow: { ...x.flow, machine: { ...x.flow.machine, coils: rec } },
       history: [...x.history, histEntry(x, `Coil record corrected: ${rec.made} coils, ${rec.accepted} accepted (${fmtQty(rec.acceptedKg, 'kg')}), ${rec.rejected} rejected (${fmtQty(rec.rejectedKg, 'kg')})`, nowIso)] }));
@@ -14882,7 +15871,8 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     }
     if (!resolved.length && !impResolved.length) return { error: 'Enter a quantity against at least one production order or imported stock item.' };
     const pending = orderPendingQty(order);
-    if (total > pending + 1e-9) return { error: `That is more than the ${fmtQty(pending, order.unit)} still pending on this order.` };
+    const maxQty = orderMaxDispatchQty(order);
+    if (total > maxQty + 1e-9) return { error: `That is more than the ${fmtQty(maxQty, order.unit)} that can still be dispatched on this order (${fmtQty(pending, order.unit)} pending${toleranceFor(order.unit) ? ` + ${toleranceFor(order.unit)} kg tolerance` : ''}).` };
     const deliveryNo = drawDocNumber('delivery');
     const now = new Date().toISOString();
     const delivery = {
@@ -14903,13 +15893,13 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       return { ...b, flow: { ...flow, dispatchedQty: dispatched, dispatchedUnits: Math.round(((Number(flow.dispatchedUnits) || 0) + altIssued) * 100) / 100 }, status: full ? 'Complete' : b.status, history: [...b.history, entry] };
     }));
     const newDispatched = orderDispatchedQty(order) + total;
-    const newStatus = newDispatched >= Number(order.qty) - 1e-9 ? 'Dispatched' : 'Part Dispatched';
+    const newStatus = isFullyDispatched(order.qty, newDispatched, order.unit) ? 'Dispatched' : 'Part Dispatched';
     const updatedOrder = { ...order, dispatchedQty: newDispatched, status: newStatus };
     commitOrders(ordersRef.current.map(o => o.id === orderId ? updatedOrder : o));
     syncOrderTracking(updatedOrder);
     resolved.forEach(({ b, kg, altIssued }) => issueFinished(b.spec, b.unit, kg, deliveryNo, altIssued));
     impResolved.forEach(({ item, kg, units }) => issueImported(item, kg, units, deliveryNo));
-    const left = Math.max(0, Number(order.qty) - newDispatched);
+    const left = isFullyDispatched(order.qty, newDispatched, order.unit) ? 0 : Math.max(0, Number(order.qty) - newDispatched);
     logAudit({ actor: user.name, action: 'delivery', entityType: 'order', entityId: orderId, details: { deliveryNo, qty: total, uom: order.unit, kg: totalKg, pending: left } });
     notifyRoles(['Sales'], `Delivery ${deliveryNo}: ${fmtQty(total, order.unit)}${order.unit === 'kg' ? '' : ` (${fmtQty(totalKg, 'kg')})`} dispatched to ${order.customer}${order.location ? `, ${order.location}` : ''}${(order.orderNo || order.salesOrderNo) ? ` (order ${orderLabel(order)})` : ''}. ${left > 0 ? `${fmtQty(left, order.unit)} still pending.` : 'Order fully dispatched.'}`, 'delivery', { deliveryNo, orderId });
     return { ok: true, deliveryNo, pending: left };
@@ -14938,7 +15928,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     const order = ordersRef.current.find(o => o.id === orderId);
     if (!order || order.status !== 'Short Closed') return { error: 'That order is not short closed.' };
     const { shortClosed, ...rest } = order;
-    const status = orderDispatchedQty(order) >= Number(order.qty) - 1e-9 ? 'Dispatched' : 'Part Dispatched';
+    const status = isFullyDispatched(order.qty, orderDispatchedQty(order), order.unit) ? 'Dispatched' : 'Part Dispatched';
     const updated = { ...rest, status, shortCloseHistory: [...(order.shortCloseHistory || []), { ...shortClosed, reopenedAt: new Date().toISOString(), reopenedBy: user.name }] };
     commitOrders(ordersRef.current.map(o => o.id === orderId ? updated : o));
     syncOrderTracking(updated);
@@ -15114,8 +16104,8 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
         <ActingAsGate user={user} shiftNames={shiftNames} onConfirm={handleConfirmActing} onLogout={handleLogout} />
       ) : (
         <BatchIndexCtx.Provider value={batchIndex}>
-        <MasterDataCtx.Provider value={{ customers: master.customers || [], sizes: master.sizes || [], standards: master.standards || [], standardRequired: master.standardRequired || {}, potCapacityKg: settingValue(settings, 'potCapacityKg'), capacities: master.capacities || {}, shiftDayStart: settingValue(settings, 'shiftDayStart'), shiftNightStart: settingValue(settings, 'shiftNightStart'), orderListClosestFirst: settingValue(settings, 'orderListClosestFirst'), seeCustomer: canDo(user.role, 'customer.see'), specs: (master.lists || {}).specifications?.items || [], canAdd: canDo(user.role, 'master.add'), save: addMasterFromForm }}>
-        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries }}>
+        <MasterDataCtx.Provider value={{ customers: master.customers || [], sizes: master.sizes || [], standards: master.standards || [], standardRequired: master.standardRequired || {}, toleranceLocked: master.toleranceLocked || {}, potCapacityKg: settingValue(settings, 'potCapacityKg'), capacities: master.capacities || {}, shiftDayStart: settingValue(settings, 'shiftDayStart'), shiftNightStart: settingValue(settings, 'shiftNightStart'), orderListClosestFirst: settingValue(settings, 'orderListClosestFirst'), seeCustomer: canDo(user.role, 'customer.see'), specs: (master.lists || {}).specifications?.items || [], canAdd: canDo(user.role, 'master.add'), save: addMasterFromForm }}>
+        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, labResults, pmTasks, cycleCounts, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries }}>
         <Shell tab={tab} setTab={setTab} user={user} onLogout={handleLogout} lastSync={lastSync} onRefresh={loadAll}
           notifications={notifications} onMarkNotificationsRead={markNotificationsRead} isOnline={isOnline} pendingSyncCount={pendingSyncCount}
           orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance}>
@@ -15149,10 +16139,12 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           {tab === 'quality' && <QualityReleaseTab batches={batches} user={user} onDecision={qualityDecision} />}
           {tab === 'dispatch' && <DispatchTab batches={scoped ? [] : batches} orders={scoped ? scoped.orders : orders} deliveries={scoped ? scoped.deliveries : deliveries} finishedItems={scoped ? [] : finishedItems} dispatchPlans={scoped ? scoped.dispatchPlans : dispatchPlans} user={user} setTab={setTab}
             onPostDelivery={postDelivery} onDecision={setDispatchDecision} onSetReason={setDispatchReason} />}
-          {tab === 'cost' && <CostOfProductionTab costData={costData} onUpdateMonth={updateCostMonth} batches={batches} dprEntries={dprEntries} machineProd={machineProd} settings={settings} user={user} />}
+          {tab === 'cost' && <CostOfProductionTab costData={costData} onUpdateMonth={updateCostMonth} batches={batches} dprEntries={dprEntries} machineProd={machineProd} settings={settings} user={user} charges={annealCharges} onUpdateSettings={updateSettings} />}
           {tab === 'inventory' && <><InventoryTab batches={batches} rawItems={rawItems} finishedItems={finishedItems} onAddRaw={addRaw} onAdjustRaw={adjustRaw} onDeleteRaw={deleteRaw} onAddFinished={addFinished} onAddFinishedBatch={addFinishedBatch} onAdjustFinished={adjustFinished} onDeleteFinished={deleteFinished} onSetFinishedCategory={setFinishedCategory} onSetRawKind={setRawKind} rawConsumption={rawConsumption} user={user} /><RawMaterialRequestsPanel orders={orders} rawItems={rawItems} user={user} /></>}
           {tab === 'bomMrp' && <BomMrpTab bom={bom} onAddBom={addBom} onDeleteBom={deleteBom} orders={orders} rawItems={rawItems} batches={batches} settings={settings} user={user} />}
           {tab === 'skills' && <SkillMatrixTab skillMatrix={skillMatrix} onUpdateLevel={updateSkillLevel} onRemovePerson={removeSkillPerson} user={user} />}
+          {tab === 'cyclecount' && canSeeTab(user, 'cyclecount') && <CycleCountTab sessions={cycleCounts} rawItems={rawItems} finishedItems={finishedItems} onStart={startCycleCount} onSaveLine={saveCountLine} onRemoveLine={removeCountLine} onSubmit={submitCount} onDecide={decideCountLine} onClose={closeCount} onCancel={cancelCount} user={user} />}
+          {tab === 'lab' && canSeeTab(user, 'lab') && <LabTab heats={heats} batches={batches} labResults={labResults} onAdd={addLabResult} onDelete={deleteLabResult} user={user} />}
           {tab === 'reports' && canSeeTab(user, 'reports') && <ReportsTab user={user} />}
           {tab === 'audit' && canSeeTab(user, 'audit') && <AuditTab user={user} />}
           {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} onDeleteDie={deleteDie} user={user} />}
@@ -15171,7 +16163,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           {tab === 'trends' && <TrendsTab dailyPlans={dailyPlans} batches={batches} downtimeLogs={downtimeLogs} maintenanceLogs={maintenanceLogs} settings={settings} onUpdateSettings={updateSettings} />}
           {tab === 'master' && canSeeTab(user, 'master') && <MasterTab user={user} settings={settings} master={master} machines={machines}
             onSaveSettings={saveMasterSettings} onSaveList={saveMasterList} onUpdateMachines={updateMachines}
-            onSaveAccess={saveMasterAccess} onResetAccess={resetMasterAccess} onCopyAccess={copyMasterAccess} onSaveData={saveMasterData} onSaveRequired={saveStandardRequired} onSaveCapacities={saveMasterCapacities} orders={orders} />}
+            onSaveAccess={saveMasterAccess} onResetAccess={resetMasterAccess} onCopyAccess={copyMasterAccess} onSaveData={saveMasterData} onSaveRequired={saveStandardRequired} onSaveTolLock={saveToleranceLocked} onSaveCapacities={saveMasterCapacities} orders={orders} />}
           {tab === 'team' && <TeamRolesTab userRoles={userRoles} onUpdate={updateUserRoles} shiftNames={shiftNames} onUpdateShiftNames={updateShiftNames} user={user} customerLinks={master.customerLinks || {}} onSaveCustomerLink={saveCustomerLink} />}
         </Shell>
         </ReportCtx.Provider>
