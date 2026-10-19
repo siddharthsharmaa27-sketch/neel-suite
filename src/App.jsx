@@ -162,7 +162,7 @@ async function supabaseGetKV(key) {
     { headers: authHeaders() }
   );
   if (res.status === 401) {
-    await ensureFreshToken();
+    await ensureFreshToken(true);
     res = await fetch(
       `${SUPABASE_URL}/rest/v1/app_data?key=eq.${encodeURIComponent(key)}&select=value`,
       { headers: authHeaders() }
@@ -171,6 +171,30 @@ async function supabaseGetKV(key) {
   if (!res.ok) return undefined;
   const rows = await res.json();
   return rows.length ? rows[0].value : undefined;
+}
+// Like supabaseGetKV, but a failed read THROWS instead of looking the same as "no row yet".
+// Without this, a slow or failed read became an empty list, and the next save wrote that empty list over the real data.
+async function supabaseGetKVChecked(key) {
+  await ensureFreshToken();
+  const url = `${SUPABASE_URL}/rest/v1/app_data?key=eq.${encodeURIComponent(key)}&select=value`;
+  let res = await fetch(url, { headers: authHeaders() });
+  if (res.status === 401) { await ensureFreshToken(true); res = await fetch(url, { headers: authHeaders() }); }
+  if (!res.ok) throw new Error(`read failed (${res.status})`);
+  const rows = await res.json();
+  return rows.length ? { found: true, value: rows[0].value } : { found: false };
+}
+async function supabaseGetAllKVChecked() {
+  await ensureFreshToken();
+  const url = `${SUPABASE_URL}/rest/v1/app_data?select=key,value`;
+  let res = await fetch(url, { headers: authHeaders() });
+  if (res.status === 401) { await ensureFreshToken(true); res = await fetch(url, { headers: authHeaders() }); }
+  if (!res.ok) throw new Error(`bulk read failed (${res.status})`);
+  const rows = await res.json();
+  const map = {};
+  if (Array.isArray(rows)) {
+    rows.forEach(r => { if (r && r.key) map[r.key] = r.value; });
+  }
+  return map;
 }
 async function supabaseSetKV(key, value) {
   await ensureFreshToken();
@@ -184,7 +208,7 @@ async function supabaseSetKV(key, value) {
   });
   let res = await doPost();
   if (res.status === 401) {
-    await ensureFreshToken();
+    await ensureFreshToken(true);
     res = await doPost();
   }
   return res.ok;
@@ -448,6 +472,7 @@ const KEYS = {
   lab: 'ctpm:lab_results',
   cycleCounts: 'ctpm:cycle_counts',
   machineEnergy: 'ctpm:machine_energy_logs',
+  rawMaterialRequests: 'ctpm:raw_material_requests',
 };
 
 /* =========================================================================
@@ -1613,9 +1638,33 @@ function withTimeout(promiseFactory, ms = 4000) {
 // Supabase's `app_data` table instead of the Claude-artifact-only
 // window.storage API, so it actually persists and is shared across
 // everyone using the live deployed site.
+// Keys whose read failed this session. Saving is blocked for them so an empty fallback can never overwrite real data.
+const loadFailedKeys = new Set();
+let onLoadProblem = null;   // set by the App root to show the "saving paused" banner
 async function loadShared(key, fallback) {
-  const res = await withTimeout(() => supabaseGetKV(key));
-  return res !== undefined ? res : fallback;
+  let res = await withTimeout(() => supabaseGetKVChecked(key), 8000);
+  if (res === undefined) res = await withTimeout(() => supabaseGetKVChecked(key), 12000);   // one slower retry
+  if (res === undefined) {
+    loadFailedKeys.add(key);
+    if (onLoadProblem) onLoadProblem(loadFailedKeys.size);
+    return fallback;
+  }
+  if (loadFailedKeys.delete(key) && onLoadProblem) onLoadProblem(loadFailedKeys.size);
+  return res.found ? res.value : fallback;
+}
+async function loadAllSharedBulk() {
+  let map = await withTimeout(() => supabaseGetAllKVChecked(), 10000);
+  if (map === undefined) map = await withTimeout(() => supabaseGetAllKVChecked(), 15000);
+  if (map === undefined) {
+    loadFailedKeys.add('ctpm:bulk_load');
+    if (onLoadProblem) onLoadProblem(loadFailedKeys.size);
+    return null;
+  }
+  if (loadFailedKeys.size > 0) {
+    loadFailedKeys.clear();
+    if (onLoadProblem) onLoadProblem(0);
+  }
+  return map;
 }
 const pendingSaveKeys = new Set();
 const saveChains = new Map();
@@ -1666,6 +1715,7 @@ function clearOfflineWrite(key) {
 async function flushOfflineQueue() {
   const queue = readOfflineQueue();
   for (const key of Object.keys(queue)) {
+    if (loadFailedKeys.has(key)) continue;
     const ok = await withTimeout(() => supabaseSetKV(key, queue[key]));
     if (ok) clearOfflineWrite(key);
   }
@@ -1716,6 +1766,7 @@ function shouldSkipLoad(key) {
   return pendingSaveKeys.has(key) || hasQueuedOfflineWrite(key);
 }
 function saveShared(key, value) {
+  if (loadFailedKeys.has(key)) { console.warn('Save skipped: this data failed to load, so writing would overwrite it.', key); return; }
   pendingSaveKeys.add(key);
   queueOfflineWrite(key, value);
   const prevChain = saveChains.get(key) || Promise.resolve();
@@ -3516,62 +3567,42 @@ const REPORTS = [
         'Dies near limit': dies.map(d => ({ Type: d.type || 'Die', ID: d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit': d.limitMeters, 'Used %': Math.round((d.usageMeters / d.limitMeters) * 100) })),
       };
     } },
-  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'Charges sheet (one row per charge / pot with times and total pot kg), Specs sheet (what was in each pot), plus Summary, By pot and By spec.',
+  { id: 'annealing', group: 'Production', title: 'Annealing file', desc: 'Annealing sheet (every pot charge with its contents on the same rows: pot no., production order, basket, size, kg, times, heating / soaking / cooling) plus a Summary sheet with one row per charge and totals.',
     build: (c, rg) => {
       const ch = (c.charges || []).filter(x => inRangeIso(x.chargedAt, rg));
       const num = (v) => (v == null || v === '' || isNaN(Number(v)) ? null : Number(v));
       const avg = (arr) => { const v = arr.filter(n => n != null); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : ''; };
       const cycleOf = (x) => (x.potInAt && x.potOutAt ? minutesBetween(x.potInAt, x.potOutAt) : null);
+      const rows = [];
+      ch.forEach(x => {
+        const cycle = cycleOf(x);
+        const base = { 'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy, 'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '', 'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin), 'Total cycle (min)': cycle ?? '', 'Forwarded to packing': x.forwardedAt || '' };
+        const items = x.items && x.items.length ? x.items : [null];
+        items.forEach((i, n) => rows.push({
+          ...base,
+          'Production order': i?.productionOrderNo || '', 'Batch code': i?.batchCode || '', Basket: i?.basketNo || '', Spec: i?.spec || '', Qty: i?.qty ?? '', Unit: i?.unit || '', Route: i?.route || '', Machine: i?.routeMachine || '',
+          'Pot total kg': n === 0 ? potKg(x.items) : '',   // shown once per pot so a column sum is not doubled
+          Notes: n === 0 ? (x.notes || '') : '',
+        }));
+      });
+      // Summary: one row per charge, then a totals / averages row
       const avgCycle = avg(ch.map(cycleOf));
-      // Charges: one row per charge, nothing repeated. Charge no + Pot link it to the Specs sheet.
-      const charges = ch.map(x => {
+      const summary = ch.map(x => {
         const cycle = cycleOf(x);
         return {
-          'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Charged by': x.chargedBy,
-          'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '',
-          'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin),
-          'Total cycle (min)': cycle ?? '',
-          'Cycle flag': cycle != null && avgCycle !== '' && cycle > avgCycle * 1.2 ? 'LONG' : '',   // >20% above the average cycle
+          'Charge no': x.chargeNo, Pot: x.potNo, Status: x.status, 'Charged at': x.chargedAt, 'Pot in': x.potInAt || '', 'Pot out': x.potOutAt || '',
+          'Heating (min)': minutesOr(x.heatingMin), 'Soaking (min)': minutesOr(x.soakingMin), 'Cooling (min)': minutesOr(x.coolingMin), 'Total cycle (min)': cycle ?? '',
           'Specs in pot': (x.items || []).length, 'Total pot weight (kg)': potKg(x.items),
-          'Forwarded to packing': x.forwardedAt || '', Notes: x.notes || '',
+          'Cycle flag': cycle != null && avgCycle !== '' && cycle > avgCycle * 1.2 ? 'LONG' : '',   // >20% above the average cycle
         };
       });
-      // Specs: one row per item in a pot
-      const specs = ch.flatMap(x => (x.items && x.items.length ? x.items : []).map(i => ({
-        'Charge no': x.chargeNo, Pot: x.potNo, 'Production order': i.productionOrderNo || '', 'Batch code': i.batchCode || '', Basket: i.basketNo || '',
-        Spec: i.spec || '', Qty: i.qty ?? '', Unit: i.unit || '', Route: i.route || '', Machine: i.routeMachine || '',
-      })));
-      // By pot
-      const pots = {};
-      ch.forEach(x => {
-        const p = (pots[x.potNo] ||= { Pot: x.potNo, Charges: 0, 'Total kg': 0, h: [], s: [], co: [], cy: [] });
-        p.Charges += 1; p['Total kg'] += potKg(x.items);
-        p.h.push(num(x.heatingMin)); p.s.push(num(x.soakingMin)); p.co.push(num(x.coolingMin)); p.cy.push(cycleOf(x));
+      summary.push({
+        'Charge no': `TOTAL / AVG (${ch.length} charges)`, Pot: '', Status: '', 'Charged at': '', 'Pot in': '', 'Pot out': '',
+        'Heating (min)': avg(ch.map(x => num(x.heatingMin))), 'Soaking (min)': avg(ch.map(x => num(x.soakingMin))), 'Cooling (min)': avg(ch.map(x => num(x.coolingMin))), 'Total cycle (min)': avgCycle,
+        'Specs in pot': ch.reduce((t, x) => t + (x.items || []).length, 0), 'Total pot weight (kg)': ch.reduce((t, x) => t + potKg(x.items), 0),
+        'Cycle flag': summary.filter(r => r['Cycle flag']).length ? `${summary.filter(r => r['Cycle flag']).length} LONG` : '',
       });
-      const byPot = Object.values(pots).sort((a, b) => String(a.Pot).localeCompare(String(b.Pot), undefined, { numeric: true }))
-        .map(p => ({ Pot: p.Pot, Charges: p.Charges, 'Total kg': p['Total kg'], 'Avg heating (min)': avg(p.h), 'Avg soaking (min)': avg(p.s), 'Avg cooling (min)': avg(p.co), 'Avg cycle (min)': avg(p.cy) }));
-      // By spec
-      const sp = {};
-      ch.forEach(x => (x.items || []).forEach(i => {
-        const k = `${i.spec || '—'}|${i.unit || ''}`;
-        const r = (sp[k] ||= { Spec: i.spec || '—', Unit: i.unit || '', Items: 0, 'Total qty': 0 });
-        r.Items += 1; r['Total qty'] += Number(i.qty) || 0;
-      }));
-      const bySpec = Object.values(sp).sort((a, b) => String(a.Spec).localeCompare(String(b.Spec)));
-      // Summary
-      const byDay = {};
-      ch.forEach(x => { const d = isoToLocalKey(x.chargedAt); byDay[d] = (byDay[d] || 0) + potKg(x.items); });
-      const summary = [
-        { KPI: 'Charges', Value: ch.length },
-        { KPI: 'Total weight charged (kg)', Value: charges.reduce((t, r) => t + r['Total pot weight (kg)'], 0) },
-        { KPI: 'Avg heating (min)', Value: avg(ch.map(x => num(x.heatingMin))) },
-        { KPI: 'Avg soaking (min)', Value: avg(ch.map(x => num(x.soakingMin))) },
-        { KPI: 'Avg cooling (min)', Value: avg(ch.map(x => num(x.coolingMin))) },
-        { KPI: 'Avg total cycle (min)', Value: avgCycle },
-        { KPI: 'Charges flagged LONG (>20% above avg cycle)', Value: charges.filter(r => r['Cycle flag']).length },
-        ...Object.keys(byDay).sort().map(d => ({ KPI: `Kg charged on ${d}`, Value: byDay[d] })),
-      ];
-      return { 'Charges': charges, 'Specs': specs, 'Summary': summary, 'By pot': byPot, 'By spec': bySpec };
+      return { 'Annealing': rows, 'Summary': summary };
     } },
   { id: 'production', group: 'Production', title: 'Production orders & stages', desc: 'All production orders with route, size, stage, quantities, final (packed) weight and yield %, plus the scrap log.',
     build: (c, rg) => {
@@ -9220,8 +9251,8 @@ function RawMaterialRequestsPanel({ orders, rawItems, user }) {
   const [msg, setMsg] = useState('');
   const canRequest = user?.role === 'PPC Manager' || user?.role === 'Production' || canDo(user?.role, 'plan.edit');
   const canReview = ['Store', 'RM & Supply Chain Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(user?.role);
-  useEffect(() => { let live = true; supabaseGetKV('ctpm:raw_material_requests').then(v => { if (live) { setRequests(Array.isArray(v) ? v : []); setLoaded(true); } }).catch(() => { if (live) setLoaded(true); }); return () => { live = false; }; }, []);
-  const persist = next => { setRequests(next); supabaseSetKV('ctpm:raw_material_requests', next).then(ok => setMsg(ok ? 'Request list updated.' : 'Could not sync to shared storage. Please retry.')); };
+  useEffect(() => { let live = true; loadShared(KEYS.rawMaterialRequests, []).then(v => { if (live) { setRequests(Array.isArray(v) ? v : []); setLoaded(true); } }).catch(() => { if (live) setLoaded(true); }); return () => { live = false; }; }, []);
+  const persist = next => { setRequests(next); saveShared(KEYS.rawMaterialRequests, next); setMsg('Request list updated.'); };
   const submit = () => {
     const material = (rawItems || []).find(r => r.id === materialId);
     if (!material || !(Number(qty) > 0) || !requiredDate) { setMsg('Select a raw material, enter a positive quantity in MT and choose a required date.'); return; }
@@ -9247,7 +9278,7 @@ function ExecutiveRMOverview({ rawItems, user, setTab }) {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let live = true;
-    const load = () => supabaseGetKV('ctpm:raw_material_requests')
+    const load = () => loadShared(KEYS.rawMaterialRequests, [])
       .then(v => { if (live) { setRequests(Array.isArray(v) ? v : []); setLoaded(true); } })
       .catch(() => { if (live) setLoaded(true); });
     load();
@@ -14066,6 +14097,7 @@ function Shell({ tab, setTab, user, onLogout, lastSync, onRefresh, notifications
   const navGroups = NAV_GROUPS.map(g => ({ ...g, items: g.items.filter(n => canSeeTab(user, n.key)) })).filter(g => g.items.length);
   const navItems = navGroups.flatMap(g => g.items);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [quickAction, setQuickAction] = useState(null); // null | 'menu' | 'breakdown' | 'order'
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -14073,7 +14105,10 @@ function Shell({ tab, setTab, user, onLogout, lastSync, onRefresh, notifications
         e.preventDefault();
         setPaletteOpen(v => !v);
       }
-      if (e.key === 'Escape') setPaletteOpen(false);
+      if (e.key === 'Escape') {
+        setPaletteOpen(false);
+        setUserPanelOpen(false);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -14180,11 +14215,62 @@ function Shell({ tab, setTab, user, onLogout, lastSync, onRefresh, notifications
           <button onClick={onRefresh} title="Sync now" style={{
             background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', padding: 4,
           }}><RefreshCw size={16} /></button>
-          <div title={`${user.name} · ${roleLabel(user.role)}`} style={{
-            width: 30, height: 30, borderRadius: '50%', background: 'rgba(255,255,255,0.18)', color: '#fff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11.5, fontWeight: 700, flexShrink: 0,
-          }}>{initials(user.name)}</div>
+          <button
+            type="button"
+            aria-label="User menu"
+            aria-expanded={userPanelOpen}
+            data-testid="user-avatar-btn"
+            onClick={() => setUserPanelOpen(v => !v)}
+            title={`${user.name} · ${roleLabel(user.role)}`}
+            style={{
+              width: 30, height: 30, borderRadius: '50%', background: 'rgba(255,255,255,0.18)', color: '#fff',
+              border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 11.5, fontWeight: 700, flexShrink: 0,
+            }}
+          >{initials(user.name)}</button>
         </header>
+
+        {userPanelOpen && (
+          <div
+            data-testid="user-panel-backdrop"
+            onClick={() => setUserPanelOpen(false)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(27,32,36,0.45)', zIndex: 90, display: 'flex', justifyContent: 'flex-end' }}
+          >
+            <aside
+              role="dialog"
+              aria-label="User account"
+              data-testid="user-side-panel"
+              onClick={e => e.stopPropagation()}
+              style={{
+                width: '100%', maxWidth: 300, height: '100%', background: C.panel,
+                borderLeft: `1px solid ${C.border}`, padding: 20, display: 'flex', flexDirection: 'column', gap: 16,
+                boxShadow: '-8px 0 24px rgba(0,0,0,0.18)',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.borderSoft}`, paddingBottom: 12 }}>
+                <span className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>Account</span>
+                <button type="button" aria-label="Close user panel" onClick={() => setUserPanelOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext, display: 'flex' }}>
+                  <X size={18} />
+                </button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{
+                  width: 42, height: 42, borderRadius: '50%', background: C.copper, color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 700, flexShrink: 0,
+                }}>{initials(user.name)}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div data-testid="user-panel-name" style={{ fontWeight: 700, fontSize: 14.5, color: C.ink, wordBreak: 'break-word' }}>{user.name}</div>
+                  <div data-testid="user-panel-role" style={{ fontSize: 12.5, color: C.subtext, marginTop: 2 }}>{roleLabel(user.role)}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: 'auto', borderTop: `1px solid ${C.borderSoft}`, paddingTop: 14 }}>
+                <Button variant="danger" icon={LogOut} onClick={() => { setUserPanelOpen(false); onLogout(); }} style={{ width: '100%', justifyContent: 'center' }}>
+                  Sign out
+                </Button>
+              </div>
+            </aside>
+          </div>
+        )}
 
         {paletteOpen && <CommandPalette items={navItems} onNavigate={(key) => { setTab(key); setPaletteOpen(false); }} onClose={() => setPaletteOpen(false)} />}
 
@@ -14347,10 +14433,10 @@ export default function App() {
   // out. Also persist the refreshed tokens so a page reload doesn't force a
   // re-login just because the old access token in localStorage had expired.
   useEffect(() => {
-    onTokenRefreshed = (accessToken, refreshToken) => {
+    onTokenRefreshed = (accessToken, refreshToken, expiresIn) => {
       setUser(prev => {
         if (!prev) return prev;
-        const next = { ...prev, accessToken, refreshToken };
+        const next = { ...prev, accessToken, refreshToken, expiresAt: Date.now() + (Number(expiresIn) || 3600) * 1000 };
         savePersonal(KEYS.user, next);
         return next;
       });
@@ -14364,44 +14450,56 @@ export default function App() {
   }, [user]);
 
   const loadAll = useCallback(async () => {
-    const [o, dp, b, ri, fi, dt, st, mc, sp, de, mp, dqv, wb, ta, ur, sn, nt, ml, rc, cr, pm, sk, kz, bm, md, nr, pmeta, dpl, ac, prq, dlv, cop, hts, mst, ppl, dcl] = await Promise.all([
-      loadShared(KEYS.orders, []),
-      loadShared(KEYS.plans, {}),
-      loadShared(KEYS.batches, []),
-      loadShared(KEYS.raw, []),
-      loadShared(KEYS.finished, []),
-      loadShared(KEYS.downtime, {}),
-      loadShared(KEYS.settings, { monthlyTargetMT: 3000 }),
-      loadShared(KEYS.machines, DEFAULT_MACHINES),
-      loadShared(KEYS.spinnerPlans, {}),
-      loadShared(KEYS.dprEntries, {}),
-      loadShared(KEYS.dprMachineProd, {}),
-      loadShared(KEYS.dprDowntimeQuality, {}),
-      loadShared(KEYS.dprWipBuffer, { limits: {}, days: {} }),
-      loadShared(KEYS.dprTargetActual, {}),
-      loadShared(KEYS.userRoles, {}),
-      loadShared(KEYS.shiftNames, {}),
-      loadShared(KEYS.notifications, []),
-      loadShared(KEYS.maintenance, []),
-      loadShared(KEYS.rawConsumption, []),
-      loadShared(KEYS.capa, []),
-      loadShared(KEYS.pmTasks, []),
-      loadShared(KEYS.skills, {}),
-      loadShared(KEYS.kaizen, []),
-      loadShared(KEYS.bom, []),
-      loadShared(KEYS.matDocs, []),
-      loadShared(KEYS.numberRanges, {}),
-      loadShared(KEYS.planMeta, {}),
-      loadShared(KEYS.dispatchPlans, {}),
-      loadShared(KEYS.annealCharges, []),
-      loadShared(KEYS.pullRequests, []),
-      loadShared(KEYS.deliveries, []),
-      loadShared(KEYS.costOfProduction, {}),
-      loadShared(KEYS.heats, []),
-      loadShared(KEYS.master, { version: 1, lists: {}, history: [] }),
-      loadShared(KEYS.processPlans, {}),
-      loadShared(KEYS.dprClosed, {}),
-    ]);
+    const bulk = await loadAllSharedBulk();
+    if (!bulk) {
+      setDataLoading(false);
+      return;
+    }
+    const pick = (k, fb) => (bulk[k] !== undefined ? bulk[k] : fb);
+    const o = pick(KEYS.orders, []);
+    const dp = pick(KEYS.plans, {});
+    const b = pick(KEYS.batches, []);
+    const ri = pick(KEYS.raw, []);
+    const fi = pick(KEYS.finished, []);
+    const dt = pick(KEYS.downtime, {});
+    const st = pick(KEYS.settings, { monthlyTargetMT: 3000 });
+    const mc = pick(KEYS.machines, DEFAULT_MACHINES);
+    const sp = pick(KEYS.spinnerPlans, {});
+    const de = pick(KEYS.dprEntries, {});
+    const mp = pick(KEYS.dprMachineProd, {});
+    const dqv = pick(KEYS.dprDowntimeQuality, {});
+    const wb = pick(KEYS.dprWipBuffer, { limits: {}, days: {} });
+    const ta = pick(KEYS.dprTargetActual, {});
+    const ur = pick(KEYS.userRoles, {});
+    const sn = pick(KEYS.shiftNames, {});
+    const nt = pick(KEYS.notifications, []);
+    const ml = pick(KEYS.maintenance, []);
+    const rc = pick(KEYS.rawConsumption, []);
+    const cr = pick(KEYS.capa, []);
+    const pm = pick(KEYS.pmTasks, []);
+    const sk = pick(KEYS.skills, {});
+    const kz = pick(KEYS.kaizen, []);
+    const bm = pick(KEYS.bom, []);
+    const md = pick(KEYS.matDocs, []);
+    const nr = pick(KEYS.numberRanges, {});
+    const pmeta = pick(KEYS.planMeta, {});
+    const dpl = pick(KEYS.dispatchPlans, {});
+    const ac = pick(KEYS.annealCharges, []);
+    const prq = pick(KEYS.pullRequests, []);
+    const dlv = pick(KEYS.deliveries, []);
+    const cop = pick(KEYS.costOfProduction, {});
+    const hts = pick(KEYS.heats, []);
+    const mst = pick(KEYS.master, { version: 1, lists: {}, history: [] });
+    const ppl = pick(KEYS.processPlans, {});
+    const dcl = pick(KEYS.dprClosed, {});
+    const td = pick(KEYS.tooling, DEFAULT_DIES);
+    const el = pick(KEYS.machineEnergy, []);
+    const lb = pick(KEYS.lab, []);
+    const cc = pick(KEYS.cycleCounts, []);
+    if (!shouldSkipLoad(KEYS.tooling)) setToolingItems(Array.isArray(td) ? td : DEFAULT_DIES);
+    if (!shouldSkipLoad(KEYS.machineEnergy)) setEnergyLogs(Array.isArray(el) ? el : []);
+    if (!shouldSkipLoad(KEYS.lab)) setLabResults(Array.isArray(lb) ? lb : []);
+    if (!shouldSkipLoad(KEYS.cycleCounts)) setCycleCounts(Array.isArray(cc) ? cc : []);
     if (!shouldSkipLoad(KEYS.orders)) setOrders(o);
     if (!shouldSkipLoad(KEYS.plans)) setDailyPlans(dp);
     if (!shouldSkipLoad(KEYS.batches)) setBatches(b);
@@ -14489,6 +14587,8 @@ export default function App() {
   // the next poll.
 const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
   const [pendingSyncCount, setPendingSyncCount] = useState(() => totalPendingOfflineCount());
+  const [loadProblem, setLoadProblem] = useState(0);
+  useEffect(() => { onLoadProblem = (n) => setLoadProblem(n); return () => { onLoadProblem = null; }; }, []);
 
   useEffect(() => {
     onQueueChanged = (count) => setPendingSyncCount(count);
@@ -16303,6 +16403,12 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
         <BatchIndexCtx.Provider value={batchIndex}>
         <MasterDataCtx.Provider value={{ customers: master.customers || [], sizes: master.sizes || [], standards: master.standards || [], standardRequired: master.standardRequired || {}, toleranceLocked: master.toleranceLocked || {}, potCapacityKg: settingValue(settings, 'potCapacityKg'), capacities: master.capacities || {}, shiftDayStart: settingValue(settings, 'shiftDayStart'), shiftNightStart: settingValue(settings, 'shiftNightStart'), orderListClosestFirst: settingValue(settings, 'orderListClosestFirst'), seeCustomer: canDo(user.role, 'customer.see'), specs: (master.lists || {}).specifications?.items || [], canAdd: canDo(user.role, 'master.add'), save: addMasterFromForm }}>
         <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, labResults, pmTasks, cycleCounts, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries, machineProd, spinnerPlans, processPlans, dprClosed }}>
+        {loadProblem > 0 && (
+          <div role="alert" data-testid="load-problem-banner" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999, background: '#b3261e', color: '#fff', padding: '10px 16px', fontSize: 13.5, fontWeight: 600, textAlign: 'center' }}>
+            Some data could not be loaded, so saving is paused to protect what is stored. Do not enter new data. Check your connection and refresh the page.
+            <button type="button" onClick={() => window.location.reload()} style={{ marginLeft: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid #fff', background: 'transparent', color: '#fff', cursor: 'pointer', fontWeight: 700 }}>Refresh</button>
+          </div>
+        )}
         <Shell tab={tab} setTab={setTab} user={user} onLogout={handleLogout} lastSync={lastSync} onRefresh={loadAll}
           notifications={notifications} onMarkNotificationsRead={markNotificationsRead} isOnline={isOnline} pendingSyncCount={pendingSyncCount}
           orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance}>
