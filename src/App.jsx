@@ -593,7 +593,9 @@ function canUpdateOrderStatus(role) { return canDo(role, 'orders.status'); }
 // Each department owns its own step; managers and Admin can act anywhere.
 const MANAGER_ROLES = ['Manager', 'Assistant Manager', 'Admin'];
 function isManagerRole(role) { return MANAGER_ROLES.includes(role); }
-function canEditPlan(role) { return canDo(role, 'plan.edit'); }                       // DPP + dispatch plan
+function canEditPlan(role) { return canDo(role, 'plan.edit'); }
+function canManageMaster(role) { return ['Admin', 'Manager', 'Assistant Manager', 'Owner'].includes(role) || canDo(role, 'master.manage'); }
+function canConfigureAccess(role) { return ['Admin', 'Owner'].includes(role) || canDo(role, 'access.configure'); }                       // DPP + dispatch plan
 // Each station has its own role. The Production Manager and the managers can act at every station;
 // a station supervisor can act only at their own.
 function isProductionManager(role) { return role === 'Production' || role === 'PPC Manager'; }   // the PPC Manager (planning & production control) has the Production Manager's rights at the stations
@@ -1452,8 +1454,6 @@ const TARGET_CATEGORIES = [
   'Melting & Casting — Total', 'Extrusion / Milling — Total', 'Rolling — Total',
   'Cascade Drawing — Total', 'Spinner Block — Total', 'LWC Coil — Total',
   'CTL / PCC — Total', 'Annealing — Total', 'Packing (PCC)', 'Packing (LWC)',
-  'Extrusion - Total', 'Pilger - Total', 'HDB - Total', 'LDB - Total',
-  'Packing (Straight Tube)',
 ];
 
 function pct(numerator, denominator) {
@@ -2886,11 +2886,45 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
   );
 }
 
-function EnergyTrackingTab({ energyLogs, onLogMachineEnergy }) {
+function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachines = [], onAddEnergyMachine, onRemoveEnergyMachine, user }) {
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [readings, setReadings] = useState({});
+  const [showAddMachine, setShowAddMachine] = useState(false);
+  const [newMachineId, setNewMachineId] = useState('');
+  const [newMachineName, setNewMachineName] = useState('');
+  const [newMachineProcess, setNewMachineProcess] = useState('Melting');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
+
+  const allEnergyMachines = useMemo(() => {
+    const map = new Map();
+    ENERGY_MACHINES.forEach(m => map.set(m.id, { ...m, isDefault: true }));
+    (customEnergyMachines || []).forEach(m => {
+      if (m && m.id && !map.has(m.id)) map.set(m.id, { ...m, isDefault: false });
+    });
+    return Array.from(map.values());
+  }, [customEnergyMachines]);
+
+  const handleAddMachine = () => {
+    setErr('');
+    const id = newMachineId.trim().toUpperCase();
+    const name = newMachineName.trim();
+    const process = newMachineProcess.trim();
+    if (!id || !name || !process) {
+      setErr('Enter Machine ID, Machine Name, and Process.');
+      return;
+    }
+    if (allEnergyMachines.some(m => m.id.toUpperCase() === id)) {
+      setErr(`Machine ID "${id}" already exists.`);
+      return;
+    }
+    onAddEnergyMachine?.({ id, name, process });
+    setNewMachineId('');
+    setNewMachineName('');
+    setShowAddMachine(false);
+    setMsg(`Machine ${id} added to utility tracking.`);
+    setTimeout(() => setMsg(''), 3500);
+  };
 
   const handleSave = () => {
     setMsg('');
@@ -2900,39 +2934,58 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy }) {
       setErr('Enter at least one meter reading before saving.');
       return;
     }
-
     onLogMachineEnergy(entries.map(([machineId, kwh]) => ({ date: selectedDate, machineId, kwh: Number(kwh) })));
-
     setMsg('Machine energy readings saved successfully!');
     setReadings({});
-
-    // Clear the success message after a few seconds
     setTimeout(() => setMsg(''), 4000);
   };
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}><SectionTitle sub="Log daily or shift closing kWh meter readings for every individual machine.">Machine-Wise Utility Tracking</SectionTitle><ReportButton id="energy" /></div>
-        <label style={{ fontSize: 13, color: C.subtext, display: 'flex', gap: 8, alignItems: 'center' }}>
-          Reading Date:
-          <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }} />
-        </label>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+          <SectionTitle sub="Log daily or shift closing kWh meter readings for every individual machine.">Machine-Wise Utility Tracking</SectionTitle>
+          <ReportButton id="energy" />
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Button variant="secondary" icon={Plus} onClick={() => setShowAddMachine(v => !v)}>
+            {showAddMachine ? 'Close' : 'Add Machine'}
+          </Button>
+          <label style={{ fontSize: 13, color: C.subtext, display: 'flex', gap: 8, alignItems: 'center' }}>
+            Reading Date:
+            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }} />
+          </label>
+        </div>
       </div>
+
+      {showAddMachine && (
+        <Card style={{ marginBottom: 16, background: C.panelAlt }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+            <TextField label="Machine ID" value={newMachineId} onChange={e => setNewMachineId(e.target.value)} placeholder="e.g. SPB-05" />
+            <TextField label="Machine Name" value={newMachineName} onChange={e => setNewMachineName(e.target.value)} placeholder="e.g. Spinner Block 5" />
+            <TextField label="Process" value={newMachineProcess} onChange={e => setNewMachineProcess(e.target.value)} placeholder="e.g. Spinner" />
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <Button onClick={handleAddMachine}>Save Machine</Button>
+            <Button variant="secondary" onClick={() => setShowAddMachine(false)}>Cancel</Button>
+          </div>
+        </Card>
+      )}
 
       <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 500 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 540 }}>
             <thead>
               <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
                 <th style={thStyle}>Machine ID</th>
                 <th style={thStyle}>Machine Name</th>
                 <th style={thStyle}>Process</th>
                 <th style={thStyle}>Closing Meter Reading (kWh)</th>
+                <th style={thStyle}></th>
               </tr>
             </thead>
             <tbody>
-              {ENERGY_MACHINES.map(m => (
+              {allEnergyMachines.map(m => (
                 <tr key={m.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                   <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 600, color: C.copperDark }}>{m.id}</td>
                   <td style={{ padding: '10px 14px', color: C.ink, fontWeight: 500 }}>{m.name}</td>
@@ -2945,6 +2998,11 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy }) {
                       onChange={e => setReadings({ ...readings, [m.id]: e.target.value })}
                       style={{ width: 140, padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
                     />
+                  </td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right' }}>
+                    {!m.isDefault && user?.role === 'Admin' && (
+                      <ConfirmIconButton title={`Remove ${m.id}`} onConfirm={() => onRemoveEnergyMachine?.(m.id)} />
+                    )}
                   </td>
                 </tr>
               ))}
@@ -5029,7 +5087,7 @@ function OrderForm({ onAdd, onClose, user, orders, settings, onUpdateSettings })
           ) : null;
         })()}
         <p data-testid="order-no-preview" style={{ fontSize: 12.5, color: C.subtext, marginTop: 12 }}>
-          Order number: generated automatically when you save{prefix ? <> — it will look like <span className="font-mono" style={{ color: C.copperDark, fontWeight: 700 }}>{prefix}</span></> : ' (choose the product type)'}. A SAP-style sales order number is added too.
+          Order number: generated automatically when you save{prefix ? <> — it will look like <span className="font-mono" style={{ color: C.copperDark, fontWeight: 700 }}>{prefix}</span></> : ' (choose the product type)'}. A system sales order number is added too.
         </p>
         {weeklyCapacity > 0 && dueWeek && (
           <p style={{ fontSize: 12, color: overCapacity ? C.red : C.subtext, marginTop: 10, fontWeight: overCapacity ? 600 : 400 }}>
@@ -9874,7 +9932,6 @@ function computeSPC(batches, dimension = 'OD') {
   }));
 
   return Object.entries(byStage).map(([stage, samples]) => {
-    // Find the most common (target, tolerance) pair -- that's "the current spec".
     const specCounts = {};
     samples.forEach(s => {
       const key = `${s[targetKey]}|${s[toleranceKey]}`;
@@ -9886,18 +9943,23 @@ function computeSPC(batches, dimension = 'OD') {
       .sort((a, b) => new Date(a.at) - new Date(b.at));
     if (matching.length < 5) return { stage, insufficientData: true, sampleCount: matching.length };
 
-    const values = matching.map(s => s[actualKey]);
+    const values = matching.map(s => Number(s[actualKey]));
     const mean = values.reduce((s, v) => s + v, 0) / values.length;
     const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length - 1);
-    const sigma = Math.sqrt(variance);
-    const usl = target + tolerance, lsl = target - tolerance;
-    const cp = sigma > 0 ? (usl - lsl) / (6 * sigma) : null;
-    const cpk = sigma > 0 ? Math.min((usl - mean) / (3 * sigma), (mean - lsl) / (3 * sigma)) : null;
-    const points = matching.slice(-30).map((s, i) => ({ index: i + 1, value: s[actualKey], at: s.at }));
-    return { stage, target, tolerance, usl, lsl, mean, sigma, cp, cpk, sampleCount: matching.length, points };
+    const rawSigma = Math.sqrt(variance);
+    // Guard against IEEE-754 floating-point noise when all measurements are identical
+    const sigma = rawSigma < 1e-9 ? 0 : rawSigma;
+    const usl = Number((target + tolerance).toFixed(4));
+    const lsl = Number((target - tolerance).toFixed(4));
+    const cp = sigma > 0 ? Math.min(99.99, (usl - lsl) / (6 * sigma)) : null;
+    const cpk = sigma > 0 ? Math.min(99.99, Math.min((usl - mean) / (3 * sigma), (mean - lsl) / (3 * sigma))) : null;
+    const zeroVariance = sigma === 0 && mean >= lsl && mean <= usl;
+    const points = matching.slice(-30).map((s, i) => ({ index: i + 1, value: Number(s[actualKey]), at: s.at }));
+    return { stage, target, tolerance, usl, lsl, mean, sigma, cp, cpk, zeroVariance, sampleCount: matching.length, points };
   }).filter(r => r.sampleCount >= 1);
 }
-function cpkRating(cpk) {
+function cpkRating(cpk, zeroVariance = false) {
+  if (zeroVariance) return { label: 'Zero variance (on target)', tone: 'green' };
   if (cpk == null) return { label: '—', tone: 'default' };
   if (cpk >= 1.33) return { label: 'Well controlled', tone: 'green' };
   if (cpk >= 1.0) return { label: 'Marginal', tone: 'amber' };
@@ -9913,9 +9975,13 @@ function SpcChartCard({ result }) {
       </Card>
     );
   }
-  const rating = cpkRating(result.cpk);
+  const rating = cpkRating(result.cpk, result.zeroVariance);
+  const pad = Math.max((result.tolerance || 0.05) * 0.25, 0.02);
+  const yMin = Number((Math.min(result.lsl, ...result.points.map(p => p.value)) - pad).toFixed(3));
+  const yMax = Number((Math.max(result.usl, ...result.points.map(p => p.value)) + pad).toFixed(3));
+
   return (
-    <Card>
+    <Card style={{ overflow: 'hidden' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 4 }}>
         <div>
           <h3 className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>{result.stage}</h3>
@@ -9923,14 +9989,18 @@ function SpcChartCard({ result }) {
         </div>
         <Badge tone={rating.tone}>{rating.label}</Badge>
       </div>
-      <div style={{ display: 'flex', gap: 20, margin: '10px 0 14px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, margin: '10px 0 14px' }}>
         <div>
           <div style={{ fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>Cp</div>
-          <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, color: C.ink }}>{result.cp != null ? result.cp.toFixed(2) : '—'}</div>
+          <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, color: C.ink }}>
+            {result.cp != null ? result.cp.toFixed(2) : (result.zeroVariance ? '∞' : '—')}
+          </div>
         </div>
         <div>
           <div style={{ fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>Cpk</div>
-          <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, color: rating.tone === 'red' ? C.red : C.ink }}>{result.cpk != null ? result.cpk.toFixed(2) : '—'}</div>
+          <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, color: rating.tone === 'red' ? C.red : C.ink }}>
+            {result.cpk != null ? result.cpk.toFixed(2) : (result.zeroVariance ? '∞' : '—')}
+          </div>
         </div>
         <div>
           <div style={{ fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>Mean</div>
@@ -9939,10 +10009,10 @@ function SpcChartCard({ result }) {
       </div>
       <div style={{ width: '100%', height: 180 }}>
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={result.points} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+          <LineChart data={result.points} margin={{ top: 8, right: 28, left: -12, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={C.borderSoft} />
             <XAxis dataKey="index" tick={{ fontSize: 10, fill: C.faint }} axisLine={{ stroke: C.border }} tickLine={false} />
-            <YAxis tick={{ fontSize: 10, fill: C.faint }} axisLine={false} tickLine={false} domain={['dataMin - 0.02', 'dataMax + 0.02']} />
+            <YAxis tick={{ fontSize: 10, fill: C.faint }} axisLine={false} tickLine={false} domain={[yMin, yMax]} />
             <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${C.border}` }} />
             <ReferenceLine y={result.usl} stroke={C.red} strokeDasharray="4 4" label={{ value: 'USL', fontSize: 10, fill: C.red, position: 'right' }} />
             <ReferenceLine y={result.lsl} stroke={C.red} strokeDasharray="4 4" label={{ value: 'LSL', fontSize: 10, fill: C.red, position: 'right' }} />
@@ -11016,7 +11086,7 @@ function TargetActualSection({ targetActual, onUpdate, date, spinnerPlans, batch
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <p data-testid="ta-explainer" style={{ fontSize: 12, color: C.subtext, padding: '14px 14px 0' }}>
         All values in MT. <strong>Plan</strong> comes from the Production Plan; <strong>actual</strong> comes from Stage Tracking (what each process finished that day), or the Daily Report where Stage Tracking has nothing.
-        Type a number only to override the automatic one. Month-to-date adds up every day of the month automatically. Product rows (Extrusion, Pilger, HDB, LDB) have no automatic source yet and stay manual.
+        Type a number only to override the automatic one. Month-to-date adds up every day of the month automatically.
       </p>
       <div style={{ overflowX: 'auto' }}>
         <table data-testid="ta-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 1250, marginTop: 10 }}>
@@ -11512,7 +11582,7 @@ function QMLotsTab({ batches }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <SectionTitle sub="Every inspection lot, SAP QM style: characteristics, results, valuation and the usage decision that closes the lot.">Inspection lots (QM)</SectionTitle>
+        <SectionTitle sub="Every inspection lot: characteristics, results, valuation and the usage decision that closes the lot.">Inspection lots (QM)</SectionTitle>
         <ExportButton label="Export lots" onExport={() => exportToExcel('neelsuite-inspection-lots.xlsx', {
           'Inspection lots': shown.map(l => ({ 'Inspection lot': l.lotNo, Type: l.typeText, 'Production order': l.batch.productionOrderNo || '', Material: l.batch.spec || '', Qty: l.qty, Unit: l.unit, Status: LOT_STATUS[l.status].code, 'Usage decision': l.ud ? `${l.ud.code} ${l.ud.text}` : '', 'Stock type': l.stockType, Created: l.createdAt, 'Created by': l.createdBy, Remark: l.ud?.remark || l.remark || '' })),
           Results: shown.flatMap(l => l.results.map(r => ({ 'Inspection lot': l.lotNo, Characteristic: r.name, Target: r.target ?? '', Tolerance: r.tol ?? '', Actual: r.actual, Valuation: r.ok === false ? 'Rejected' : r.ok === true ? 'Accepted' : 'Not valued' }))),
@@ -11733,16 +11803,223 @@ function AdminClearData({ user, onClear }) {
     </Card>
   );
 }
+function HorizonMyHome({
+  setTab, user, batches, maintenanceLogs, pullRequests, onOpenSettings,
+}) {
+  const [appFilter, setAppFilter] = useState('Favorites');
+  const firstName = (user?.name || 'User').split(/[@.\s]/)[0];
+  const displayFirst = firstName.charAt(0).toUpperCase() + firstName.slice(1);
+  const todayFormatted = new Date().toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+  });
+
+  const todos = [];
+  const openBreakdowns = (maintenanceLogs || []).filter(m => m.status !== 'Resolved');
+  if (openBreakdowns.length > 0 && canSeeTab(user, 'maintenance')) {
+    todos.push({
+      id: 'todo-maint',
+      title: `${openBreakdowns.length} open machine breakdown${openBreakdowns.length > 1 ? 's' : ''} awaiting resolution`,
+      sub: openBreakdowns.slice(0, 2).map(m => m.machineId).join(', '),
+      tab: 'maintenance',
+      tone: 'red',
+    });
+  }
+  const qcQueue = (batches || []).filter(b => isPullBatch(b) && ['AWAIT_QC', 'QC_HOLD'].includes(batchFlowState(b)));
+  if (qcQueue.length > 0 && canSeeTab(user, 'quality')) {
+    todos.push({
+      id: 'todo-qc',
+      title: `${qcQueue.length} packed lot${qcQueue.length > 1 ? 's' : ''} awaiting Quality usage decision`,
+      sub: 'Quality Release',
+      tab: 'quality',
+      tone: 'amber',
+    });
+  }
+  const heldLwc = (batches || []).filter(b => isPullBatch(b) && batchFlowState(b) === 'LWC_HOLD');
+  if (heldLwc.length > 0 && canSeeTab(user, 'qchold')) {
+    todos.push({
+      id: 'todo-hold',
+      title: `${heldLwc.length} LWC basket${heldLwc.length > 1 ? 's' : ''} on quality hold`,
+      sub: 'QC Hold Section',
+      tab: 'qchold',
+      tone: 'red',
+    });
+  }
+  const openReqs = (pullRequests || []).filter(isRequestOpen);
+  if (openReqs.length > 0 && canSeeTab(user, 'floor')) {
+    todos.push({
+      id: 'todo-pull',
+      title: `${openReqs.length} open material pull request${openReqs.length > 1 ? 's' : ''} on the shop floor`,
+      sub: 'Shop Floor (Pull)',
+      tab: 'floor',
+      tone: 'copper',
+    });
+  }
+
+  const allApps = [
+    { title: 'Process Inspection Lots', subtitle: 'Worklist', icon: ListChecks, tab: 'qmlots', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Display Stock Overview', subtitle: 'Raw & Finished Goods', icon: Boxes, tab: 'inventory', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Production Plan (DPP)', subtitle: 'Daily Process Plan', icon: CalendarDays, tab: 'plan', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Stage Tracking', subtitle: 'Production Orders', icon: Workflow, tab: 'stages', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Shop Floor Workbench', subtitle: 'Pull Operations', icon: Wrench, tab: 'floor', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Quality Release', subtitle: 'Inspection Usage Decision', icon: ClipboardCheck, tab: 'quality', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'QC Hold Section', subtitle: 'Held LWC Baskets', icon: AlertOctagon, tab: 'qchold', cat: 'Favorites', color: '#bb0000' },
+    { title: 'Lab & Mechanical', subtitle: 'Spectro & Tensile Tests', icon: Activity, tab: 'lab', cat: 'Most Used', color: '#0a6ed1' },
+    { title: 'Post Goods Movement', subtitle: 'Material Documents', icon: FileSpreadsheet, tab: 'matdocs', cat: 'Favorites', color: '#5c2d91' },
+    { title: 'Cycle Count', subtitle: 'Physical Inventory Audit', icon: ScanLine, tab: 'cyclecount', cat: 'Most Used', color: '#0a6ed1' },
+    { title: 'Display Outbound Delivery', subtitle: 'Dispatch & Challans', icon: Package, tab: 'dispatch', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Sales Orders', subtitle: 'Order Book & Tracking', icon: ClipboardList, tab: 'orders', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'My Maintenance Requests', subtitle: 'Breakdowns & PM', icon: AlertOctagon, tab: 'maintenance', cat: 'Favorites', color: '#0a6ed1' },
+    { title: 'Tooling & Die Life', subtitle: 'Die & Plug Register', icon: Wrench, tab: 'tooling', cat: 'Most Used', color: '#0a6ed1' },
+    { title: 'Machine Energy', subtitle: 'kWh Utility Tracking', icon: Zap, tab: 'energy', cat: 'Recently Used', color: '#107e3e' },
+    { title: 'Daily Production Report', subtitle: 'Shift DPR & OEE', icon: FileSpreadsheet, tab: 'dpr', cat: 'Most Used', color: '#0a6ed1' },
+    { title: 'SPC Capability', subtitle: 'Cp / Cpk Charts', icon: Activity, tab: 'spc', cat: 'Recommended', color: '#0a6ed1' },
+    { title: 'CAPA Register', subtitle: 'Corrective Actions', icon: ShieldCheck, tab: 'capa', cat: 'Recommended', color: '#0a6ed1' },
+    { title: 'BOM & MRP', subtitle: 'Material Requirements', icon: Layers, tab: 'bomMrp', cat: 'Recommended', color: '#0a6ed1' },
+    { title: 'Cost of Production', subtitle: 'Monthly Conversion Cost', icon: Scale, tab: 'cost', cat: 'Recommended', color: '#0a6ed1' },
+    { title: 'Reports & Downloads', subtitle: 'Excel Packs & MTC', icon: FileDown, tab: 'reports', cat: 'Recently Used', color: '#0a6ed1' },
+    { title: 'System Master', subtitle: 'Standards, Access & Lists', icon: SlidersHorizontal, tab: 'master', cat: 'Recently Used', color: '#354a5f' },
+  ].filter(a => canSeeTab(user, a.tab));
+
+  const visibleApps = appFilter === 'Favorites'
+    ? allApps
+    : allApps.filter(a => a.cat === appFilter);
+
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{
+        background: 'linear-gradient(90deg, #0057b8 0%, #0a6ed1 55%, #1b7fd6 100%)',
+        borderRadius: 10, padding: '18px 24px', color: '#fff',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12,
+        boxShadow: '0 2px 8px rgba(10,110,209,0.18)', marginBottom: 20,
+      }}>
+        <div>
+          <div style={{ fontSize: 12, opacity: 0.9, fontWeight: 500, marginBottom: 4 }}>{todayFormatted}</div>
+          <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: -0.2 }}>
+            Hi {displayFirst}, great to see you! Check out Recap for updates.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setTab('dpr')}
+            style={{
+              background: '#fff', color: '#0854a0', border: 'none', borderRadius: 6,
+              padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+            }}
+          >Recap</button>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            style={{
+              background: '#fff', color: '#0854a0', border: 'none', borderRadius: 6,
+              padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+            }}
+          >My Home Settings</button>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>To-Dos ({todos.length})</span>
+          <ChevronDown size={15} color={C.subtext} />
+        </div>
+        {todos.length === 0 ? (
+          <div style={{
+            background: '#fff', border: `1px solid ${C.borderSoft}`, borderRadius: 10,
+            padding: '22px 20px', textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.03)',
+          }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: C.ink }}>You have completed all of your to-dos.</div>
+            <div style={{ fontSize: 12, color: C.subtext, marginTop: 3 }}>New ones will show up here.</div>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+            {todos.map(t => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.tab)}
+                className="hover-lift"
+                style={{
+                  background: '#fff', border: `1px solid ${C.border}`, borderLeft: `4px solid ${t.tone === 'red' ? C.red : t.tone === 'amber' ? C.amber : C.copper}`,
+                  borderRadius: 8, padding: '14px 16px', textAlign: 'left', cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: C.ink }}>{t.title}</div>
+                <div style={{ fontSize: 12, color: C.subtext, marginTop: 4 }}>{t.sub}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>Apps</span>
+            <ChevronDown size={15} color={C.subtext} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 20, borderBottom: `1px solid ${C.border}`, marginBottom: 14 }}>
+          {['Favorites', 'Most Used', 'Recently Used', 'Recommended'].map(cat => {
+            const active = appFilter === cat;
+            return (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => setAppFilter(cat)}
+                style={{
+                  background: 'none', border: 'none', padding: '8px 2px', cursor: 'pointer',
+                  fontSize: 13, fontWeight: active ? 700 : 500,
+                  color: active ? '#0a6ed1' : C.subtext,
+                  borderBottom: active ? '2px solid #0a6ed1' : '2px solid transparent',
+                }}
+              >{cat}</button>
+            );
+          })}
+        </div>
+        <div style={{
+          background: 'rgba(255,255,255,0.65)', border: `1px solid ${C.borderSoft}`,
+          borderRadius: 12, padding: 16,
+          display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(225px, 1fr))', gap: 12,
+        }}>
+          {visibleApps.map(app => (
+            <button
+              key={app.title}
+              type="button"
+              onClick={() => setTab(app.tab)}
+              className="hover-lift"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
+                background: '#fff', border: `1px solid ${C.borderSoft}`, borderRadius: 8,
+                cursor: 'pointer', textAlign: 'left', boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
+              }}
+            >
+              <div style={{
+                width: 34, height: 34, borderRadius: 8, background: app.color || '#0a6ed1',
+                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <app.icon size={18} />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.ink, lineHeight: 1.25 }}>{app.title}</div>
+                {app.subtitle && <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 2 }}>{app.subtitle}</div>}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HomePage(props) {
   return (
     <div>
-      <SectionTitle sub={`${PLANT_NAME} · Plant ${PLANT_CODE} · everything that matters on one screen`}>Executive Dashboard</SectionTitle>
+      <HorizonMyHome {...props} />
+      <SectionTitle sub={`${PLANT_NAME} · Plant ${PLANT_CODE} · live executive insights`}>Insights Tiles</SectionTitle>
       <AdminClearData user={props.user} onClear={props.onClearAll} />
       <ExecutiveDashboard {...props} />
       <CoilQualityPanel batches={props.batches} setTab={props.setTab} />
-      <div style={{ marginTop: 8 }}>
-        <Launchpad {...props} />
-      </div>
     </div>
   );
 }
@@ -12263,11 +12540,23 @@ function AnnealingPanel({ batches, charges, requests, spinnerPlans, user, specOp
 function PackRow({ b, can, stations, onFinish }) {
   const net = batchNetQty(b);
   const [qty, setQty] = useState(String(net));
+  const [rejectedQty, setRejectedQty] = useState('');
+  const [rejectReason, setRejectReason] = useState('Dent / damage');
   const [packUnits, setPackUnits] = useState('');
   const unitLabel = packUnitOf(b.route);
   const [station, setStation] = useState(b.packingStation || '');
   const [tag, setTag] = useState(b.orderId ? 'Make to dispatch' : 'Make to stock');
   const [err, setErr] = useState('');
+  const isCoilRoute = b.route === 'LWC' || b.route === 'PCC';
+
+  const onRejectedChange = (val) => {
+    setRejectedQty(val);
+    const r = Number(val) || 0;
+    if (r >= 0 && r <= net) {
+      setQty(String(Math.max(0, Math.round((net - r) * 1000) / 1000)));
+    }
+  };
+
   return (
     <tr style={{ borderTop: `1px solid ${C.borderSoft}` }}>
       <PoCell b={b} />
@@ -12276,7 +12565,17 @@ function PackRow({ b, can, stations, onFinish }) {
         {can ? (
           <div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input aria-label={`Packed qty ${b.productionOrderNo}`} type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} style={{ ...miniInput, width: 90 }} />
+              <input aria-label={`Packed qty ${b.productionOrderNo}`} type="number" min="0" step="0.01" placeholder="Packed kg" value={qty} onChange={e => setQty(e.target.value)} style={{ ...miniInput, width: 90 }} />
+              {isCoilRoute && (
+                <>
+                  <input aria-label={`Rejected qty ${b.productionOrderNo}`} type="number" min="0" step="0.01" placeholder="Rejected kg" value={rejectedQty} onChange={e => onRejectedChange(e.target.value)} style={{ ...miniInput, width: 98, borderColor: Number(rejectedQty) > 0 ? C.red : C.border }} />
+                  {Number(rejectedQty) > 0 && (
+                    <select aria-label={`Reject reason ${b.productionOrderNo}`} value={rejectReason} onChange={e => setRejectReason(e.target.value)} style={miniInput}>
+                      {(b.route === 'LWC' ? lwcDefects() : scrapReasons()).map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  )}
+                </>
+              )}
               <input aria-label={`${unitLabel === 'pallets' ? 'Pallets' : 'Boxes'} ${b.productionOrderNo}`} type="number" min="1" step="1" placeholder={unitLabel === 'pallets' ? 'Pallets' : 'Boxes'} value={packUnits} onChange={e => setPackUnits(e.target.value)} style={{ ...miniInput, width: 80 }} />
               <select aria-label={`Station ${b.productionOrderNo}`} value={station} onChange={e => setStation(e.target.value)} style={miniInput}>
                 <option value="">Station…</option>{stations.map(s => <option key={s}>{s}</option>)}
@@ -12284,7 +12583,7 @@ function PackRow({ b, can, stations, onFinish }) {
               <select aria-label={`Tag ${b.productionOrderNo}`} value={tag} onChange={e => setTag(e.target.value)} style={miniInput}>
                 {PACK_TAGS.map(t => <option key={t}>{t}</option>)}
               </select>
-              <Button onClick={() => { const r = onFinish(b.id, { packedQty: qty, packUnits, station, tag }); setErr(r?.error || ''); }}>Finish &amp; send to {tag === 'Make to stock' ? 'Warehouse' : 'Dispatch'}</Button>
+              <Button onClick={() => { const r = onFinish(b.id, { packedQty: qty, rejectedQty, rejectReason, packUnits, station, tag }); setErr(r?.error || ''); }}>Finish &amp; send to {tag === 'Make to stock' ? 'Warehouse' : 'Dispatch'}</Button>
             </div>
             <ErrNote err={err} />
           </div>
@@ -12293,6 +12592,7 @@ function PackRow({ b, can, stations, onFinish }) {
     </tr>
   );
 }
+
 function PackingPanel({ batches, requests, machines, user, specOptions, onPull, onFinishPacking, onCreateRequest }) {
   const can = canActPacking(user.role);
   const stations = allMachines(machines).packing;
@@ -13475,7 +13775,7 @@ function MaterialDocsTab({ matDocs, rawItems, finishedItems }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
-        <SectionTitle sub="Every goods movement, classified by SAP movement type. Posted automatically whenever stock changes.">Material Documents</SectionTitle>
+        <SectionTitle sub="Every goods movement, classified by movement type. Posted automatically whenever stock changes.">Material Documents</SectionTitle>
         <ExportButton label="Export documents" onExport={() => exportToExcel('material-documents.xlsx', {
           'Material documents': filtered.map(d => ({
             'Material doc': d.docNumber, 'Posting date': d.postingDate, 'Mvt type': d.movementType,
@@ -14093,12 +14393,20 @@ function NotificationBell({ notifications, user, onMarkRead }) {
   );
 }
 
-function Shell({ tab, setTab, user, onLogout, lastSync, onRefresh, notifications, onMarkNotificationsRead, isOnline, pendingSyncCount, orders, settings, onUpdateSettings, onAddOrder, onAddMaintenance, children }) {
+function Shell({
+  tab, setTab, user, onLogout, lastSync, onRefresh, notifications, onMarkNotificationsRead,
+  isOnline, pendingSyncCount, orders, settings, onUpdateSettings, onAddOrder, onAddMaintenance,
+  pullRequests, children,
+}) {
   const navGroups = NAV_GROUPS.map(g => ({ ...g, items: g.items.filter(n => canSeeTab(user, n.key)) })).filter(g => g.items.length);
   const navItems = navGroups.flatMap(g => g.items);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [userPanelOpen, setUserPanelOpen] = useState(false);
-  const [quickAction, setQuickAction] = useState(null); // null | 'menu' | 'breakdown' | 'order'
+  const [leftMenuOpen, setLeftMenuOpen] = useState(false);
+  const [userPopoverOpen, setUserPopoverOpen] = useState(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('account');
+  const [quickAction, setQuickAction] = useState(null);
+
   useEffect(() => {
     const onKeyDown = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -14107,224 +14415,420 @@ function Shell({ tab, setTab, user, onLogout, lastSync, onRefresh, notifications
       }
       if (e.key === 'Escape') {
         setPaletteOpen(false);
-        setUserPanelOpen(false);
+        setLeftMenuOpen(false);
+        setUserPopoverOpen(false);
+        setSettingsModalOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
+
+  const SPACES = [
+    { key: 'launchpad', label: 'My Home', match: ['launchpad'] },
+    { key: 'quality', label: 'Neel : QM Apps', match: ['quality', 'qchold', 'qmlots', 'lab', 'spc', 'capa'] },
+    { key: 'orders', label: 'Neel : SD Apps', match: ['orders'] },
+    { key: 'dispatch', label: 'Shipping', match: ['dispatch'] },
+    { key: 'inventory', label: 'Inventory Management', match: ['inventory', 'cyclecount', 'matdocs', 'bomMrp'] },
+    { key: 'plan', label: 'Production & Shop Floor', match: ['plan', 'stages', 'floor', 'dpr', 'schedule'] },
+    { key: 'maintenance', label: 'Maintenance & Tooling', match: ['maintenance', 'tooling', 'energy'] },
+    ...(canSeeTab(user, 'master') ? [{ key: 'master', label: 'Administration', match: ['master', 'team', 'cost', 'reports', 'audit', 'trends', 'skills', 'kaizen'] }] : []),
+  ].filter(s => canSeeTab(user, s.key));
+
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, display: 'flex' }}>
-      {/* Desktop sidebar */}
-      <aside className="sidebar-desktop" style={{
-        width: 220, background: C.sidebar, display: 'flex', flexDirection: 'column',
-        padding: '22px 14px', position: 'sticky', top: 0, height: '100vh', flexShrink: 0,
+    <div style={{ minHeight: '100vh', background: '#f5f6f7', display: 'flex', flexDirection: 'column' }}>
+      {/* Morning Horizon Top Shell Bar */}
+      <header className="fiori-shellbar no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 12,
+        padding: '0 16px', height: 48, background: '#ffffff', color: C.ink,
+        borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, zIndex: 50,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 8px', marginBottom: 30 }}>
-          <TubeMark size={28} />
-          <div>
-            <div className="font-display" style={{ color: '#fff', fontSize: 16, fontWeight: 600 }}>Neel Suite</div>
-            <div style={{ color: '#7C848D', fontSize: 10, letterSpacing: 0.6 }}>One Thread The Whole Plant</div>
+        <button
+          type="button"
+          aria-label="Open navigation menu"
+          data-testid="hamburger-btn"
+          onClick={() => { setLeftMenuOpen(v => !v); setUserPopoverOpen(false); }}
+          style={{
+            width: 34, height: 34, borderRadius: 6, border: 'none',
+            background: leftMenuOpen ? '#eaf3fc' : 'transparent', color: C.ink,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: 16 }}>
+            <span style={{ height: 2, background: C.ink, borderRadius: 2 }} />
+            <span style={{ height: 2, background: C.ink, borderRadius: 2 }} />
+            <span style={{ height: 2, background: C.ink, borderRadius: 2 }} />
           </div>
-        </div>
-        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, overflowY: 'auto' }}>
-          {navGroups.map(group => (
-            <div key={group.label} style={{ marginBottom: 6 }}>
-              <div style={{ padding: '10px 12px 4px', fontSize: 10.5, fontWeight: 700, letterSpacing: 0.6, color: '#5B636D', textTransform: 'uppercase' }}>{group.label}</div>
-              {group.items.map(n => {
-                const active = tab === n.key;
-                return (
-                  <button key={n.key} onClick={() => setTab(n.key)} style={{
-                    display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px', borderRadius: 8,
-                    border: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 13.5, fontWeight: 600, width: '100%',
-                    background: active ? C.sidebarActive : 'transparent',
-                    color: active ? '#fff' : '#9CA3AF',
-                    borderLeft: active ? `3px solid ${C.copper}` : '3px solid transparent',
-                  }}>
-                    <n.icon size={17} strokeWidth={2.1} />
-                    {n.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
-        <div style={{ borderTop: '1px solid #2C333A', paddingTop: 14, display: 'flex', alignItems: 'center', gap: 10 }}>
+        </button>
+
+        <div
+          onClick={() => setTab('launchpad')}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+        >
           <div style={{
-            width: 32, height: 32, borderRadius: '50%', background: C.copper, color: '#fff',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0,
-          }}>{initials(user.name)}</div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: '#fff', fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.name}</div>
-            <div style={{ color: '#7C848D', fontSize: 11 }}>{roleLabel(user.role)}</div>
-          </div>
-          <ConfirmIconButton title="Switch user" icon={LogOut} onConfirm={onLogout} />
-        </div>
-      </aside>
-
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        {/* Mobile top nav */}
-        <div className="nav-mobile" style={{
-          display: 'none', background: C.sidebar, padding: '10px 12px', gap: 6, overflowX: 'auto',
-        }}>
-          {navItems.map(n => {
-            const active = tab === n.key;
-            return (
-              <button key={n.key} onClick={() => setTab(n.key)} style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 999,
-                border: 'none', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, flexShrink: 0,
-                background: active ? C.copper : 'transparent', color: active ? '#fff' : '#9CA3AF',
-              }}>
-                <n.icon size={14} /> {n.label}
-              </button>
-            );
-          })}
+            background: 'linear-gradient(135deg, #0057b8 0%, #0a6ed1 100%)', color: '#fff',
+            fontWeight: 800, fontSize: 12, padding: '4px 8px', borderRadius: 4, letterSpacing: 0.5,
+          }}>NEEL</div>
+          <span className="font-display" style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Suite Cloud</span>
         </div>
 
-        {/* Fiori shell bar: the fixed dark-blue band S/4HANA puts across the
-            top of every screen -- product/app title on the left, the search
-            field centred, notifications and the user avatar on the right. */}
-        <header className="fiori-shellbar" style={{
-          display: 'flex', alignItems: 'center', gap: 12,
-          padding: '0 16px', height: 44, minWidth: 0, background: FIORI.shellBar, color: '#fff',
-        }}>
-          <span className="font-display shellbar-title" style={{ fontSize: 14.5, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap' }}>
-            {NAV.find(n => n.key === tab)?.label || 'Home'}
-          </span>
-          <span style={{ fontSize: 11.5, color: '#c0ccd8', whiteSpace: 'nowrap' }} className="shellbar-plant">
-            Plant {PLANT_CODE}
-          </span>
-          <button onClick={() => setPaletteOpen(true)} className="no-print shellbar-search" aria-label="Search or jump to" style={{
-            display: 'flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderRadius: 4, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap',
-            border: '1px solid rgba(255,255,255,0.25)', background: 'rgba(255,255,255,0.08)', color: '#e6ecf2',
-            fontSize: 12.5, cursor: 'pointer', margin: '0 auto', maxWidth: 420, width: '100%', justifyContent: 'center',
+        <button
+          type="button"
+          onClick={() => setLeftMenuOpen(v => !v)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none',
+            fontSize: 13.5, fontWeight: 600, color: C.ink, cursor: 'pointer', padding: '4px 8px', borderRadius: 6,
+          }}
+        >
+          <span>{tab === 'launchpad' ? 'Home' : (NAV.find(n => n.key === tab)?.label || 'Home')}</span>
+          <ChevronDown size={14} color={C.subtext} />
+        </button>
+
+        <div style={{
+          display: 'flex', alignItems: 'center', marginLeft: 'auto', marginRight: 8,
+          border: '1px solid #89919a', borderRadius: 999, background: '#fff', height: 32,
+          overflow: 'hidden', maxWidth: 380, width: '100%',
+        }} className="shellbar-search">
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px', fontSize: 12.5,
+            color: C.ink, borderRight: `1px solid ${C.border}`, height: '100%', background: '#f5f6f7',
           }}>
-            <Search size={14} style={{ flexShrink: 0 }} /> <span className="shellbar-search-text">Search or jump to…</span>
-            <span className="shellbar-kbd" style={{ fontSize: 10.5, border: '1px solid rgba(255,255,255,0.3)', borderRadius: 3, padding: '1px 5px', marginLeft: 4 }}>Ctrl K</span>
+            <span>All</span>
+            <ChevronDown size={12} color={C.subtext} />
+          </div>
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            style={{
+              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '0 12px', border: 'none', background: 'transparent', color: C.subtext,
+              fontSize: 12.5, cursor: 'pointer', fontStyle: 'italic', textAlign: 'left',
+            }}
+          >
+            <span className="shellbar-search-text">Search or app launch</span>
+            <Search size={14} color={C.ink} style={{ flexShrink: 0 }} />
           </button>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {!isOnline ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#ffd6d6', fontWeight: 600, whiteSpace: 'nowrap' }}>
-              <WifiOff size={14} /> Offline — saved on device
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.red, fontWeight: 600, whiteSpace: 'nowrap' }}>
+              <WifiOff size={14} /> Offline
             </span>
           ) : pendingSyncCount > 0 ? (
-            <span style={{ fontSize: 11.5, color: '#ffe0b8', fontWeight: 600, whiteSpace: 'nowrap' }}>Syncing {pendingSyncCount}…</span>
+            <span style={{ fontSize: 11.5, color: C.amber, fontWeight: 600, whiteSpace: 'nowrap' }}>Syncing {pendingSyncCount}…</span>
           ) : (
-            <span style={{ fontSize: 11.5, color: '#b9c5d1', whiteSpace: 'nowrap' }} className="shellbar-sync">Synced {timeAgo(lastSync)}</span>
+            <span style={{ fontSize: 11.5, color: C.subtext, whiteSpace: 'nowrap' }} className="shellbar-sync">
+              {timeAgo(lastSync)}
+            </span>
           )}
+
           <NotificationBell notifications={notifications} user={user} onMarkRead={onMarkNotificationsRead} />
-          <button onClick={onRefresh} title="Sync now" style={{
-            background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', padding: 4,
-          }}><RefreshCw size={16} /></button>
+
+          <button
+            type="button"
+            onClick={onRefresh}
+            title="Sync now"
+            style={{
+              width: 32, height: 32, borderRadius: 8, border: `1px solid ${C.border}`,
+              background: '#fff', color: C.subtext, cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          ><RefreshCw size={15} /></button>
+
           <button
             type="button"
             aria-label="User menu"
-            aria-expanded={userPanelOpen}
+            aria-expanded={userPopoverOpen}
             data-testid="user-avatar-btn"
-            onClick={() => setUserPanelOpen(v => !v)}
+            onClick={() => { setUserPopoverOpen(v => !v); setLeftMenuOpen(false); }}
             title={`${user.name} · ${roleLabel(user.role)}`}
             style={{
-              width: 30, height: 30, borderRadius: '50%', background: 'rgba(255,255,255,0.18)', color: '#fff',
-              border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 11.5, fontWeight: 700, flexShrink: 0,
+              width: 32, height: 32, borderRadius: '50%', background: '#d1e8ff', color: '#0854a0',
+              border: '1px solid #a6d0f8', cursor: 'pointer', display: 'flex', alignItems: 'center',
+              justifyContent: 'center', fontSize: 12, fontWeight: 700, flexShrink: 0,
             }}
           >{initials(user.name)}</button>
-        </header>
+        </div>
+      </header>
 
-        {userPanelOpen && (
-          <div
-            data-testid="user-panel-backdrop"
-            onClick={() => setUserPanelOpen(false)}
-            style={{ position: 'fixed', inset: 0, background: 'rgba(27,32,36,0.45)', zIndex: 90, display: 'flex', justifyContent: 'flex-end' }}
-          >
-            <aside
-              role="dialog"
-              aria-label="User account"
-              data-testid="user-side-panel"
-              onClick={e => e.stopPropagation()}
+      {/* Secondary Horizontal Spaces Bar */}
+      <div className="no-print" style={{
+        display: 'flex', alignItems: 'center', gap: 22, padding: '0 20px', height: 38,
+        background: '#ffffff', borderBottom: `1px solid ${C.border}`, overflowX: 'auto',
+      }}>
+        {SPACES.map(s => {
+          const active = s.match.includes(tab);
+          return (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() => setTab(s.key)}
               style={{
-                width: '100%', maxWidth: 300, height: '100%', background: C.panel,
-                borderLeft: `1px solid ${C.border}`, padding: 20, display: 'flex', flexDirection: 'column', gap: 16,
-                boxShadow: '-8px 0 24px rgba(0,0,0,0.18)',
+                height: '100%', background: 'none', border: 'none', cursor: 'pointer',
+                fontSize: 12.5, fontWeight: active ? 700 : 500,
+                color: active ? '#0a6ed1' : C.ink,
+                borderBottom: active ? '2px solid #0a6ed1' : '2px solid transparent',
+                whiteSpace: 'nowrap', padding: '0 2px',
               }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.borderSoft}`, paddingBottom: 12 }}>
-                <span className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>Account</span>
-                <button type="button" aria-label="Close user panel" onClick={() => setUserPanelOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext, display: 'flex' }}>
-                  <X size={18} />
-                </button>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{
-                  width: 42, height: 42, borderRadius: '50%', background: C.copper, color: '#fff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 700, flexShrink: 0,
-                }}>{initials(user.name)}</div>
-                <div style={{ minWidth: 0 }}>
-                  <div data-testid="user-panel-name" style={{ fontWeight: 700, fontSize: 14.5, color: C.ink, wordBreak: 'break-word' }}>{user.name}</div>
-                  <div data-testid="user-panel-role" style={{ fontSize: 12.5, color: C.subtext, marginTop: 2 }}>{roleLabel(user.role)}</div>
-                </div>
-              </div>
-              <div style={{ marginTop: 'auto', borderTop: `1px solid ${C.borderSoft}`, paddingTop: 14 }}>
-                <Button variant="danger" icon={LogOut} onClick={() => { setUserPanelOpen(false); onLogout(); }} style={{ width: '100%', justifyContent: 'center' }}>
-                  Sign out
-                </Button>
-              </div>
-            </aside>
-          </div>
-        )}
-
-        {paletteOpen && <CommandPalette items={navItems} onNavigate={(key) => { setTab(key); setPaletteOpen(false); }} onClose={() => setPaletteOpen(false)} />}
-
-        <main className="main-pad" style={{ padding: 28, flex: 1, minWidth: 0 }}>
-          {children}
-        </main>
+            >{s.label}</button>
+          );
+        })}
       </div>
 
-      {/* Mobile quick-entry FAB -- the two things a supervisor on the shop
-          floor most urgently needs to log fast, without hunting through the
-          full desktop-shaped tabs: a breakdown, or (for Sales) a new order.
-          Hidden on desktop entirely via CSS; see .quick-entry-fab rule. */}
-      {(canSeeTab(user, 'maintenance') || canEditOrders(user.role)) && <button className="quick-entry-fab no-print" onClick={() => setQuickAction('menu')} title="Quick entry"
-        style={{
-          position: 'fixed', right: 18, bottom: 18, zIndex: 40, width: 56, height: 56, borderRadius: '50%',
-          background: C.copper, color: '#fff', border: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
-          display: 'none', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-        }}>
-        <Plus size={26} />
-      </button>}
-
-      {quickAction === 'menu' && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(27,32,36,0.5)', zIndex: 50, display: 'flex', alignItems: 'flex-end' }} onClick={() => setQuickAction(null)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', width: '100%', borderRadius: '16px 16px 0 0', padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: C.border, alignSelf: 'center', marginBottom: 6 }} />
-            <h3 className="font-display" style={{ fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 4 }}>Quick entry</h3>
-            {canSeeTab(user, 'maintenance') && <button onClick={() => setQuickAction('breakdown')} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 12px', borderRadius: 10, border: `1px solid ${C.border}`, background: C.panel, cursor: 'pointer', textAlign: 'left' }}>
-              <AlertOctagon size={20} color={C.red} /> <span style={{ fontSize: 14.5, fontWeight: 600, color: C.ink }}>Report breakdown</span>
-            </button>}
-            {canEditOrders(user.role) && (
-              <button onClick={() => setQuickAction('order')} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 12px', borderRadius: 10, border: `1px solid ${C.border}`, background: C.panel, cursor: 'pointer', textAlign: 'left' }}>
-                <ClipboardList size={20} color={C.steel} /> <span style={{ fontSize: 14.5, fontWeight: 600, color: C.ink }}>Add order</span>
+      {/* Left Hamburger Popover Navigation Drawer */}
+      {leftMenuOpen && (
+        <div
+          data-testid="hamburger-backdrop"
+          onClick={() => setLeftMenuOpen(false)}
+          style={{ position: 'fixed', inset: 0, top: 48, background: 'rgba(0,0,0,0.18)', zIndex: 80 }}
+        >
+          <aside
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 280, maxHeight: 'calc(100vh - 56px)', margin: '4px 0 0 8px',
+              background: '#ffffff', borderRadius: 8, border: `1px solid ${C.border}`,
+              boxShadow: '0 10px 28px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            <div style={{ padding: 8, borderBottom: `1px solid ${C.borderSoft}` }}>
+              <button
+                type="button"
+                onClick={() => { setTab('launchpad'); setLeftMenuOpen(false); }}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
+                  borderRadius: 6, border: tab === 'launchpad' ? '1px solid #0a6ed1' : '1px solid transparent',
+                  background: tab === 'launchpad' ? '#eaf3fc' : 'transparent',
+                  color: C.ink, fontSize: 13, fontWeight: 600, cursor: 'pointer', textAlign: 'left',
+                }}
+              >
+                <LayoutDashboard size={16} color="#0a6ed1" /> My Home
               </button>
-            )}
-            <Button variant="ghost" onClick={() => setQuickAction(null)}>Cancel</Button>
+            </div>
+            <div style={{ padding: '10px 14px 6px', fontSize: 11.5, fontWeight: 700, color: C.subtext, display: 'flex', justifyContent: 'space-between' }}>
+              <span>Favorite Apps</span>
+              <ChevronDown size={14} />
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 8px' }}>
+              {navGroups.map(group => (
+                <div key={group.label} style={{ marginBottom: 8 }}>
+                  <div style={{ padding: '6px 10px 3px', fontSize: 10.5, fontWeight: 700, color: C.faint, textTransform: 'uppercase' }}>
+                    {group.label}
+                  </div>
+                  {group.items.map(n => {
+                    const active = tab === n.key;
+                    return (
+                      <button
+                        key={n.key}
+                        type="button"
+                        onClick={() => { setTab(n.key); setLeftMenuOpen(false); }}
+                        style={{
+                          width: '100%', display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '8px 10px', borderRadius: 6, border: 'none',
+                          background: active ? '#eaf3fc' : 'transparent',
+                          color: active ? '#0854a0' : C.ink,
+                          fontSize: 13, fontWeight: active ? 700 : 500, cursor: 'pointer', textAlign: 'left',
+                        }}
+                      >
+                        <n.icon size={15} color={active ? '#0a6ed1' : C.subtext} />
+                        {n.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* Top-Right User Profile Popover with Bottom-Right Sign Out Button */}
+      {userPopoverOpen && (
+        <div
+          data-testid="user-panel-backdrop"
+          onClick={() => setUserPopoverOpen(false)}
+          style={{ position: 'fixed', inset: 0, top: 48, background: 'transparent', zIndex: 90 }}
+        >
+          <div
+            role="dialog"
+            aria-label="User account"
+            data-testid="user-side-panel"
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: 'absolute', top: 6, right: 14, width: 290, background: '#ffffff',
+              borderRadius: 10, border: `1px solid ${C.border}`,
+              boxShadow: '0 12px 32px rgba(0,0,0,0.18)', overflow: 'hidden',
+            }}
+          >
+            <div style={{ padding: '22px 20px 16px', textAlign: 'center', borderBottom: `1px solid ${C.borderSoft}` }}>
+              <div style={{
+                width: 68, height: 68, borderRadius: '50%', background: '#d1e8ff', color: '#0854a0',
+                border: '2px solid #0a6ed1', margin: '0 auto 10px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 700,
+              }}>{initials(user.name)}</div>
+              <div data-testid="user-panel-name" style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>
+                {user.name}
+              </div>
+              <div data-testid="user-panel-role" style={{ fontSize: 12.5, color: C.subtext, marginTop: 3 }}>
+                {roleLabel(user.role)} · Plant {PLANT_CODE}
+              </div>
+            </div>
+
+            <div style={{ padding: '6px 0' }}>
+              {[
+                { label: 'Settings', icon: SlidersHorizontal, onClick: () => { setUserPopoverOpen(false); setSettingsModalOpen(true); } },
+                { label: 'Recent Activities', icon: History, onClick: () => { setUserPopoverOpen(false); setTab('stages'); } },
+                { label: 'Frequently Used', icon: LayoutGrid, onClick: () => { setUserPopoverOpen(false); setTab('launchpad'); } },
+                { label: 'App Finder', icon: Search, onClick: () => { setUserPopoverOpen(false); setPaletteOpen(true); } },
+                { label: 'My Home Settings', icon: Wrench, onClick: () => { setUserPopoverOpen(false); setSettingsModalOpen(true); } },
+              ].map(item => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={item.onClick}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+                    padding: '10px 18px', background: 'none', border: 'none',
+                    fontSize: 13, color: C.ink, cursor: 'pointer', textAlign: 'left',
+                  }}
+                  className="hover-lift"
+                >
+                  <item.icon size={15} color={C.subtext} />
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </div>
+
+            <div style={{
+              padding: '10px 16px', borderTop: `1px solid ${C.borderSoft}`,
+              display: 'flex', justifyContent: 'flex-end', background: '#fafbfc',
+            }}>
+              <button
+                type="button"
+                onClick={() => { setUserPopoverOpen(false); onLogout(); }}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, background: 'none',
+                  border: 'none', color: '#0a6ed1', fontSize: 13, fontWeight: 600,
+                  cursor: 'pointer', padding: '6px 10px', borderRadius: 6,
+                }}
+              >
+                <LogOut size={15} /> Sign Out
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      {quickAction === 'breakdown' && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(27,32,36,0.5)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={() => setQuickAction(null)}>
-          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 480 }}>
-            <BreakdownForm onAdd={(f) => { onAddMaintenance(f); setQuickAction(null); }} onClose={() => setQuickAction(null)} />
+      {/* Two-Pane Settings Modal */}
+      {settingsModalOpen && (
+        <div
+          onClick={() => setSettingsModalOpen(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(27,32,36,0.45)', zIndex: 110,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '100%', maxWidth: 680, minHeight: 420, background: '#fff',
+              borderRadius: 10, border: `1px solid ${C.border}`,
+              boxShadow: '0 20px 50px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            }}
+          >
+            <div style={{ padding: '14px 20px', borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 15 }}>
+              Settings
+            </div>
+            <div style={{ display: 'flex', flex: 1, minHeight: 320 }}>
+              <div style={{ width: 220, borderRight: `1px solid ${C.border}`, background: '#f7f8f9' }}>
+                {[
+                  { key: 'account', title: 'User Account', sub: user.name },
+                  { key: 'appearance', title: 'Appearance', sub: 'Morning Horizon' },
+                  { key: 'region', title: 'Language and Region', sub: 'English (India)' },
+                  { key: 'defaults', title: 'Default Values', sub: `Plant ${PLANT_CODE}` },
+                ].map(item => {
+                  const active = settingsTab === item.key;
+                  return (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setSettingsTab(item.key)}
+                      style={{
+                        width: '100%', padding: '12px 16px', textAlign: 'left', border: 'none',
+                        borderBottom: `1px solid ${C.borderSoft}`, cursor: 'pointer',
+                        background: active ? '#eaf3fc' : 'transparent',
+                        borderLeft: active ? '3px solid #0a6ed1' : '3px solid transparent',
+                      }}
+                    >
+                      <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{item.title}</div>
+                      <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 2 }}>{item.sub}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ flex: 1, padding: 24 }}>
+                {settingsTab === 'account' && (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+                      <Users size={22} color={C.ink} />
+                      <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>{user.name}</h3>
+                    </div>
+                    <div style={{
+                      background: '#f8f9fa', borderRadius: 8, padding: 18,
+                      display: 'grid', gridTemplateColumns: '110px 1fr', rowGap: 10, fontSize: 13,
+                    }}>
+                      <span style={{ color: C.subtext, textAlign: 'right', paddingRight: 14 }}>Name:</span>
+                      <span style={{ fontWeight: 600 }}>{user.name}</span>
+                      <span style={{ color: C.subtext, textAlign: 'right', paddingRight: 14 }}>Role:</span>
+                      <span style={{ fontWeight: 600 }}>{roleLabel(user.role)}</span>
+                      <span style={{ color: C.subtext, textAlign: 'right', paddingRight: 14 }}>Plant:</span>
+                      <span style={{ fontWeight: 600 }}>{PLANT_NAME} ({PLANT_CODE})</span>
+                      <span style={{ color: C.subtext, textAlign: 'right', paddingRight: 14 }}>Server:</span>
+                      <span className="font-mono" style={{ fontSize: 12 }}>{typeof window !== 'undefined' ? window.location.host : 'neel-suite.local'}</span>
+                    </div>
+                  </div>
+                )}
+                {settingsTab === 'appearance' && (
+                  <div>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, marginTop: 0 }}>Theme</h3>
+                    <p style={{ fontSize: 13, color: C.subtext }}>Morning Horizon theme is active across Neel Suite.</p>
+                  </div>
+                )}
+                {settingsTab === 'region' && (
+                  <div>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, marginTop: 0 }}>Language &amp; Region</h3>
+                    <p style={{ fontSize: 13, color: C.subtext }}>Date format: YYYY-MM-DD · Currency: INR (₹) / USD ($)</p>
+                  </div>
+                )}
+                {settingsTab === 'defaults' && (
+                  <div>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, marginTop: 0 }}>Default Plant Values</h3>
+                    <p style={{ fontSize: 13, color: C.subtext }}>Plant Code: {PLANT_CODE} · Default UOM: kg / MT</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div style={{
+              padding: '10px 16px', borderTop: `1px solid ${C.border}`,
+              display: 'flex', justifyContent: 'flex-end', gap: 8, background: '#fafbfc',
+            }}>
+              <Button onClick={() => setSettingsModalOpen(false)}>Save</Button>
+              <Button variant="ghost" onClick={() => setSettingsModalOpen(false)}>Cancel</Button>
+            </div>
           </div>
         </div>
       )}
 
-      {quickAction === 'order' && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(27,32,36,0.5)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={() => setQuickAction(null)}>
-          <div onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: 480, maxHeight: '90vh', overflowY: 'auto' }}>
-            <OrderForm onAdd={(o) => { const r = onAddOrder(o); if (!r?.error) setQuickAction(null); return r; }} onClose={() => setQuickAction(null)} user={user} orders={orders} settings={settings} onUpdateSettings={onUpdateSettings} />
-          </div>
-        </div>
-      )}
+      {paletteOpen && <CommandPalette items={navItems} onNavigate={(key) => { setTab(key); setPaletteOpen(false); }} onClose={() => setPaletteOpen(false)} />}
+
+      <main className="main-pad" style={{ padding: '20px 28px', flex: 1, minWidth: 0 }}>
+        {React.Children.map(children, child =>
+          React.isValidElement(child) && child.type === HomePage
+            ? React.cloneElement(child, { onOpenSettings: () => setSettingsModalOpen(true), pullRequests })
+            : child
+        )}
+      </main>
     </div>
   );
 }
@@ -16026,32 +16530,53 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     if (reqs !== requestsRef.current) commitRequests(reqs);
     return { ok: true };
   };
-  const finishPacking = (id, { packedQty, packUnits, station, tag, note }) => {
+  const finishPacking = (id, { packedQty, rejectedQty, rejectReason, packUnits, station, tag, note }) => {
     const b = batchById(id);
     if (!b || batchFlowState(b) !== 'PACKING') return { error: 'This production order is not being packed.' };
     if (!PACK_TAGS.includes(tag)) return { error: 'Tag the material "Make to stock" or "Make to dispatch".' };
     const net = batchNetQty(b);
     const qty = Number(packedQty);
+    const rejKg = Number(rejectedQty) || 0;
     if (!(qty > 0)) return { error: 'Enter the packed quantity.' };
-    if (qty > net + 1e-9) return { error: `Packed quantity cannot exceed ${fmtQty(net, b.unit)} (quantity after scrap).` };
+    if (rejKg < 0) return { error: 'Rejected weight cannot be negative.' };
+    if (qty + rejKg > net + 1e-9) return { error: `Packed (${fmtQty(qty, b.unit)}) + rejected (${fmtQty(rejKg, b.unit)}) cannot exceed ${fmtQty(net, b.unit)} received.` };
     const unitLabel = packUnitOf(b.route);
     const units = Number(packUnits);
     if (!(units > 0) || !Number.isInteger(units)) return { error: `Enter the number of ${unitLabel} packed (a whole number).` };
     const now = new Date().toISOString();
-    const shortfall = Math.round((net - qty) * 1e6) / 1e6;
-    const scrapLog = shortfall > 0
-      ? [...(b.scrapLog || []), { id: uid(), stage: 'Packing', qty: shortfall, reason: 'Other', actionTaken: 'Packing shortfall (packed less than received)', at: now, by: user.name }]
-      : (b.scrapLog || []);
+    const shortfall = Math.max(0, Math.round((net - qty - rejKg) * 1e6) / 1e6);
+    const extraScrap = [];
+    if (rejKg > 0) {
+      extraScrap.push({ id: uid(), stage: 'Packing', qty: rejKg, reason: rejectReason || 'Dent / damage', actionTaken: `Damaged / bad coil rejected during ${b.route} packing`, at: now, by: user.name });
+    }
+    if (shortfall > 0) {
+      extraScrap.push({ id: uid(), stage: 'Packing', qty: shortfall, reason: 'Other', actionTaken: 'Packing shortfall (packed less than received)', at: now, by: user.name });
+    }
+    const scrapLog = [...(b.scrapLog || []), ...extraScrap];
     const totalScrap = scrapLog.reduce((s, r) => s + Number(r.qty || 0), 0);
-    // Goods receipt from production automatically creates the final inspection lot (SAP QM);
-    // the packed stock sits in quality-inspection stock until the usage decision.
     const lotNo = drawDocNumber('inspectionLot');
     patchBatches([id], x => ({
       ...x, scrapLog,
-      flow: { ...x.flow, inspectionLot: { lotNo, createdAt: now, createdBy: user.name }, packing: { ...x.flow.packing, packedQty: qty, packUnits: units, packUnitLabel: unitLabel, packages: `${units} ${unitLabel}`, station: station || x.packingStation || '', tag, note: note || '', packedAt: now, packedBy: user.name } },
-      history: [...x.history, histEntry(x, `Packed ${fmtQty(qty, x.unit)} (${units} ${unitLabel}) — ${tag} (${tag === 'Make to stock' ? 'to Warehouse' : 'to Dispatch'}) · inspection lot ${lotNo} created`, now)],
+      flow: {
+        ...x.flow,
+        inspectionLot: { lotNo, createdAt: now, createdBy: user.name },
+        packing: {
+          ...x.flow.packing,
+          packedQty: qty,
+          rejectedQty: rejKg,
+          rejectReason: rejKg > 0 ? (rejectReason || 'Dent / damage') : '',
+          packUnits: units,
+          packUnitLabel: unitLabel,
+          packages: `${units} ${unitLabel}`,
+          station: station || x.packingStation || '',
+          tag,
+          note: note || '',
+          packedAt: now,
+          packedBy: user.name,
+        },
+      },
+      history: [...x.history, histEntry(x, `Packed ${fmtQty(qty, x.unit)} (${units} ${unitLabel})${rejKg > 0 ? ` · ${fmtQty(rejKg, x.unit)} rejected (${rejectReason || 'Dent / damage'})` : ''} — ${tag} (${tag === 'Make to stock' ? 'to Warehouse' : 'to Dispatch'}) · inspection lot ${lotNo} created`, now)],
     }));
-    // Packed output becomes finished stock now (movement 101); dispatch later issues it (601).
     addOrIncrementFinished(b.spec || 'Unspecified', b.unit, qty, { category: fgCategoryOfRoute(b.route), altQty: units, altUnit: unitLabel });
     postMaterialDocument({ movementType: '101', materialNumber: materialNumberForSpec(b.spec || 'Unspecified'), materialName: b.spec || 'Unspecified', quantity: qty, unit: b.unit, storageLocation: 'QI01', refDoc: b.productionOrderNo || b.batchCode });
     if (totalScrap > 0) {
@@ -16411,7 +16936,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
         )}
         <Shell tab={tab} setTab={setTab} user={user} onLogout={handleLogout} lastSync={lastSync} onRefresh={loadAll}
           notifications={notifications} onMarkNotificationsRead={markNotificationsRead} isOnline={isOnline} pendingSyncCount={pendingSyncCount}
-          orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance}>
+          orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance} pullRequests={pullRequests}>
           {isCustomer && <CustomerBanner user={user} link={customerLink} />}
           {tab === 'launchpad' && <HomePage setTab={setTab} orders={orders} dailyPlans={dailyPlans} batches={batches} rawItems={rawItems}
             maintenanceLogs={maintenanceLogs} capaRecords={capaRecords} pmTasks={pmTasks} costData={costData} machineProd={machineProd}
@@ -16451,7 +16976,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           {tab === 'reports' && canSeeTab(user, 'reports') && <ReportsTab user={user} />}
           {tab === 'audit' && canSeeTab(user, 'audit') && <AuditTab user={user} />}
           {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} onDeleteDie={deleteDie} user={user} />}
-          {tab === 'energy' && <EnergyTrackingTab energyLogs={energyLogs} onLogMachineEnergy={logMachineEnergy} />}
+          {tab === 'energy' && <EnergyTrackingTab energyLogs={energyLogs} onLogMachineEnergy={logMachineEnergy} customEnergyMachines={settings.customEnergyMachines || []} onAddEnergyMachine={(m) => updateSettings({ customEnergyMachines: [...(settings.customEnergyMachines || []), m] })} onRemoveEnergyMachine={(id) => updateSettings({ customEnergyMachines: (settings.customEnergyMachines || []).filter(x => x.id !== id) })} user={user} />}
           {tab === 'kaizen' && <KaizenTab kaizenIdeas={kaizenIdeas} onAdd={addKaizen} onUpdateStatus={updateKaizenStatus} onDelete={deleteKaizen} user={user} />}
           {tab === 'dpr' && <DprTab dprEntries={dprEntries} onUpdateDpr={updateDprEntry}
             machineProd={machineProd}
