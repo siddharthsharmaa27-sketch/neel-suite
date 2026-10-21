@@ -22,8 +22,149 @@ import * as XLSX from 'xlsx';
    pre-bundled package list), so we talk to Supabase's REST/Auth endpoints
    directly with fetch. This is functionally equivalent to the SDK.
    ========================================================================= */
+
+/* =========================================================================
+   NEEL SUITE — 5 PROFESSIONAL ENTERPRISE THEMES & FAVORITES ENGINE
+   ========================================================================= */
+const NEEL_THEMES = {
+  morning_horizon: {
+    id: 'morning_horizon',
+    name: 'Morning Horizon',
+    tagline: 'Clean daylight enterprise blue & crisp alabaster surfaces',
+    shellBg: '#f5f6f7',
+    subBarBg: '#ffffff',
+    pageBg: '#f5f6f7',
+    cardBg: '#ffffff',
+    textMain: '#1d2d3e',
+    textSub: '#556b82',
+    accent: '#0070f2',
+    accentSoft: '#ebf5fe',
+    bannerGradient: 'linear-gradient(135deg, #0057d2 0%, #0070f2 60%, #1b90ff 100%)',
+    bannerText: '#ffffff',
+    border: '#d9e0e6',
+    badgeBg: '#0057d2',
+  },
+  industrial_copper: {
+    id: 'industrial_copper',
+    name: 'Industrial Copper (Neel Signature)',
+    tagline: 'Warm metallurgical copper & brushed anthracite tailored for tube mills',
+    shellBg: '#1c1917',
+    subBarBg: '#292524',
+    pageBg: '#f5f3ef',
+    cardBg: '#ffffff',
+    textMain: '#1c1917',
+    textSub: '#57534e',
+    accent: '#b45309',
+    accentSoft: '#fef3c7',
+    bannerGradient: 'linear-gradient(135deg, #7c2d12 0%, #b45309 55%, #d97706 100%)',
+    bannerText: '#ffffff',
+    border: '#e7e0d6',
+    badgeBg: '#b45309',
+  },
+  evening_horizon: {
+    id: 'evening_horizon',
+    name: 'Evening Horizon (Control Room Dark)',
+    tagline: 'Low-glare dark slate & cyan accents for 24×7 shop-floor terminals',
+    shellBg: '#0f172a',
+    subBarBg: '#1e293b',
+    pageBg: '#0b1120',
+    cardBg: '#1e293b',
+    textMain: '#f1f5f9',
+    textSub: '#94a3b8',
+    accent: '#38bdf8',
+    accentSoft: '#0c4a6e',
+    bannerGradient: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #0284c7 100%)',
+    bannerText: '#f8fafc',
+    border: '#334155',
+    badgeBg: '#0284c7',
+  },
+  emerald_precision: {
+    id: 'emerald_precision',
+    name: 'Emerald Precision',
+    tagline: 'High-contrast botanical teal & alabaster for quality & lab precision',
+    shellBg: '#064e3b',
+    subBarBg: '#065f46',
+    pageBg: '#f0fdf4',
+    cardBg: '#ffffff',
+    textMain: '#064e3b',
+    textSub: '#3f6212',
+    accent: '#059669',
+    accentSoft: '#d1fae5',
+    bannerGradient: 'linear-gradient(135deg, #064e3b 0%, #047857 60%, #10b981 100%)',
+    bannerText: '#ffffff',
+    border: '#bbf7d0',
+    badgeBg: '#059669',
+  },
+  quartz_executive: {
+    id: 'quartz_executive',
+    name: 'Quartz Titanium',
+    tagline: 'Executive minimalist graphite, cool quartz & royal indigo',
+    shellBg: '#18181b',
+    subBarBg: '#27272a',
+    pageBg: '#f4f4f5',
+    cardBg: '#ffffff',
+    textMain: '#18181b',
+    textSub: '#52525b',
+    accent: '#4f46e5',
+    accentSoft: '#e0e7ff',
+    bannerGradient: 'linear-gradient(135deg, #1e1b4b 0%, #3730a3 55%, #4f46e5 100%)',
+    bannerText: '#ffffff',
+    border: '#e4e4e7',
+    badgeBg: '#4f46e5',
+  },
+};
+
+const ALL_NEEL_APPS_CATALOG = [
+  { id: 'fav-insp', title: 'Process Inspection Lots', sub: 'Worklist', tab: 'quality', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-stock', title: 'Display Stock Overview', sub: 'Raw & Finished Goods', tab: 'inventory', color: '#0070f2', category: 'Inventory Management' },
+  { id: 'fav-dpp', title: 'Production Plan (DPP)', sub: 'Daily Process Plan', tab: 'plan', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-stage', title: 'Stage Tracking', sub: 'Production Orders', tab: 'tracking', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-shop', title: 'Shop Floor Workbench', sub: 'Pull Operations', tab: 'shopfloor', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-qrel', title: 'Quality Release', sub: 'Inspection Usage Decision', tab: 'quality', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-qchold', title: 'QC Hold Section', sub: 'Held LWC Baskets', tab: 'qchold', color: '#b91c1c', category: 'Quality Management' },
+  { id: 'fav-lab', title: 'Lab & Mechanical', sub: 'Spectro & Tensile Tests', tab: 'lab', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-pgm', title: 'Post Goods Movement', sub: 'Material Documents', tab: 'inventory', color: '#5c2d91', category: 'Inventory Management' },
+  { id: 'fav-cycle', title: 'Cycle Count', sub: 'Physical Inventory Audit', tab: 'cyclecount', color: '#0070f2', category: 'Inventory Management' },
+  { id: 'fav-outb', title: 'Display Outbound Delivery', sub: 'Dispatch & Challans', tab: 'dispatch', color: '#0070f2', category: 'Shipping & SD' },
+  { id: 'fav-orders', title: 'Sales Orders', sub: 'Order Book & Tracking', tab: 'orders', color: '#0070f2', category: 'Shipping & SD' },
+  { id: 'fav-maint', title: 'My Maintenance Requests', sub: 'Breakdowns & PM', tab: 'maintenance', color: '#0070f2', category: 'Maintenance & Tooling' },
+  { id: 'fav-tool', title: 'Tooling & Die Life', sub: 'Die & Plug Register', tab: 'tooling', color: '#0070f2', category: 'Maintenance & Tooling' },
+  { id: 'fav-energy', title: 'Machine Energy', sub: 'kWh Utility Tracking', tab: 'energy', color: '#107e3e', category: 'Maintenance & Tooling' },
+  { id: 'fav-dpr', title: 'Daily Production Report', sub: 'Shift DPR & OEE', tab: 'dpr', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-spc', title: 'SPC Capability', sub: 'Cp / Cpk Charts', tab: 'spc', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-capa', title: 'CAPA Register', sub: 'Corrective Actions', tab: 'capa', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-bom', title: 'BOM & MRP', sub: 'Material Requirements', tab: 'bom', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-cost', title: 'Cost of Production', sub: 'Monthly Conversion Cost', tab: 'costing', color: '#0070f2', category: 'Administration' },
+  { id: 'fav-rep', title: 'Reports & Downloads', sub: 'Excel Packs & MTC', tab: 'reports', color: '#0070f2', category: 'Administration' },
+  { id: 'fav-master', title: 'System Master', sub: 'Standards, Access & Lists', tab: 'master', color: '#354a5f', category: 'Administration' },
+];
+
 const SUPABASE_URL = 'https://fvxcfntbajlwyagcgxea.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2eGNmbnRiYWpsd3lhZ2NneGVhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2MzYyNzMsImV4cCI6MjEwMzIxMjI3M30.VveMkmxLxvqfBMAQ7ytu_FT4mG8Bah8FlXWGdwtEamk';
+
+/* =========================================================================
+   INDIGO — MERCURE METALS & ALLOYS PVT. LTD. BRAND LOGO (MTC GROUP REMOVED)
+   ========================================================================= */
+function IndigoBrandLogo({ size = 'shell' }) {
+  if (size === 'lg') {
+    return (
+      <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 8, userSelect: 'none', marginBottom: 6 }}>
+        <img src="/indigo-icon.svg" alt="Copper Ribbon" style={{ height: 52, width: 'auto', display: 'block', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ background: '#0057d2', color: '#fff', fontWeight: 800, fontSize: 15, letterSpacing: '0.06em', padding: '4px 9px', borderRadius: 6 }}>NEEL</span>
+          <span style={{ fontWeight: 800, fontSize: 22, color: '#ffffff', letterSpacing: '-0.01em' }}>Suite</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, userSelect: 'none' }}>
+      <img src="/indigo-icon.svg" alt="Copper Ribbon" style={{ height: 28, width: 'auto', display: 'block', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.1))' }} />
+      <span style={{ background: 'var(--neel-accent-dark, #0057d2)', color: '#fff', fontWeight: 800, fontSize: 12, letterSpacing: '0.06em', padding: '4px 8px', borderRadius: 5, lineHeight: 1.1 }}>NEEL</span>
+      <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--neel-text, #1d2d3e)', letterSpacing: '-0.01em' }}>Suite Cloud</span>
+    </div>
+  );
+}
 
 async function supabaseSignIn(email, password) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
@@ -99,27 +240,38 @@ function setAuthSession(accessToken, refreshToken, expiresIn) {
   currentRefreshToken = refreshToken || null;
   currentTokenExpiresAt = accessToken ? Date.now() + ((Number(expiresIn) || 3600) * 1000) : 0;
 }
-async function ensureFreshToken() {
-  if (!currentRefreshToken) return currentAccessToken;
-  // Only actually hit Supabase when within 60s of real expiry (or expiry is
-  // unknown) -- NOT on every call. A single sync cycle fires 20+ requests
-  // via Promise.all; refreshing unconditionally on every one of them floods
-  // Supabase's auth endpoint and gets rate-limited (429 Too Many Requests),
-  // which is exactly what happened before this fix.
-  const needsRefresh = !currentTokenExpiresAt || Date.now() >= currentTokenExpiresAt - 60000;
+let onAuthExpired = null;
+async function ensureFreshToken(force = false) {
+  if (!currentRefreshToken) {
+    if (force && onAuthExpired) onAuthExpired();
+    return currentAccessToken;
+  }
+  // Refresh 5 minutes before expiry OR immediately when force=true (on a 401 response)
+  const needsRefresh = force || !currentTokenExpiresAt || Date.now() >= currentTokenExpiresAt - 300000;
   if (!needsRefresh) return currentAccessToken;
-  // If a refresh is already underway, share it rather than firing a second
-  // one -- otherwise every one of those 20+ concurrent calls would each
-  // kick off its own refresh the moment the token actually expires.
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
       try {
         const data = await supabaseRefreshToken(currentRefreshToken);
         setAuthSession(data.access_token, data.refresh_token, data.expires_in);
+        try {
+          const raw = localStorage.getItem('ctpm:user_identity');
+          if (raw) {
+            const u = JSON.parse(raw);
+            localStorage.setItem('ctpm:user_identity', JSON.stringify({
+              ...u,
+              accessToken: data.access_token,
+              refreshToken: data.refresh_token,
+              expiresAt: Date.now() + ((Number(data.expires_in) || 3600) * 1000),
+            }));
+          }
+        } catch {}
         if (onTokenRefreshed) onTokenRefreshed(data.access_token, data.refresh_token, data.expires_in);
       } catch (e) {
-        // refresh failed (e.g. refresh token itself expired) -- caller will get a
-        // 401 from Supabase and the UI can prompt the person to sign in again
+        console.warn('Session expired, redirecting to login screen:', e);
+        setAuthSession(null, null, 0);
+        try { localStorage.removeItem('ctpm:user_identity'); } catch {}
+        if (onAuthExpired) onAuthExpired();
       } finally {
         refreshInFlight = null;
       }
@@ -179,6 +331,11 @@ async function supabaseGetKVChecked(key) {
   const url = `${SUPABASE_URL}/rest/v1/app_data?key=eq.${encodeURIComponent(key)}&select=value`;
   let res = await fetch(url, { headers: authHeaders() });
   if (res.status === 401) { await ensureFreshToken(true); res = await fetch(url, { headers: authHeaders() }); }
+  if (res.status === 401) {
+    try { localStorage.removeItem('ctpm:user_identity'); } catch {}
+    window.location.reload();
+    throw new Error('Session expired — reloading to sign in');
+  }
   if (!res.ok) throw new Error(`read failed (${res.status})`);
   const rows = await res.json();
   return rows.length ? { found: true, value: rows[0].value } : { found: false };
@@ -188,6 +345,11 @@ async function supabaseGetAllKVChecked() {
   const url = `${SUPABASE_URL}/rest/v1/app_data?select=key,value`;
   let res = await fetch(url, { headers: authHeaders() });
   if (res.status === 401) { await ensureFreshToken(true); res = await fetch(url, { headers: authHeaders() }); }
+  if (res.status === 401) {
+    try { localStorage.removeItem('ctpm:user_identity'); } catch {}
+    window.location.reload();
+    throw new Error('Session expired — reloading to sign in');
+  }
   if (!res.ok) throw new Error(`bulk read failed (${res.status})`);
   const rows = await res.json();
   const map = {};
@@ -15399,11 +15561,7 @@ function Shell({
           onClick={() => setTab('launchpad')}
           style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
         >
-          <div style={{
-            background: 'linear-gradient(135deg, #0057b8 0%, #0a6ed1 100%)', color: '#fff',
-            fontWeight: 800, fontSize: 12, padding: '4px 8px', borderRadius: 4, letterSpacing: 0.5,
-          }}>NEEL</div>
-          <span className="font-display" style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Suite Cloud</span>
+          <IndigoBrandLogo size="shell" />
         </div>
 
         <button
@@ -15726,7 +15884,56 @@ function Shell({
                 {settingsTab === 'appearance' && (
                   <div>
                     <h3 style={{ fontSize: 16, fontWeight: 700, marginTop: 0 }}>Theme</h3>
-                    <p style={{ fontSize: 13, color: C.subtext }}>Morning Horizon theme is active across Neel Suite.</p>
+                    <p style={{ fontSize: 13, color: C.subtext }}>Choose a visual theme for your workspace (applies live across banners, shell & cards):
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 10, maxHeight: 245, overflowY: 'auto', overflowX: 'hidden', paddingRight: 2 }}>
+                      {Object.values(NEEL_WORKSPACE_THEMES).map(t => {
+                        const currentTheme = localStorage.getItem('neel_active_theme') || 'morning_horizon';
+                        const isSelected = currentTheme === t.id;
+                        return (
+                          <div
+                            key={t.id}
+                            onClick={() => {
+                              applyThemeToDocument(t.id);
+                              // Force immediate react state update in settings modal if available
+                              try { setSelectedTheme(t.id); } catch {}
+                              window.dispatchEvent(new CustomEvent('neel-theme-changed', { detail: t.id }));
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 8,
+                              padding: '9px 11px',
+                              borderRadius: 8,
+                              border: isSelected ? `2px solid ${t.accent}` : '1px solid #d9e0e6',
+                              background: isSelected ? '#f0f7ff' : '#ffffff',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+                              <div style={{ width: 26, height: 26, borderRadius: 6, background: t.swatch, flexShrink: 0, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.12)' }} />
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#1d2d3e', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</div>
+                                <div style={{ fontSize: 10.5, color: '#556b82', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.shortDesc}</div>
+                              </div>
+                            </div>
+                            <span style={{
+                              fontSize: 10.5,
+                              fontWeight: 700,
+                              whiteSpace: 'nowrap',
+                              padding: '3px 8px',
+                              borderRadius: 999,
+                              background: isSelected ? t.accent : '#f1f5f9',
+                              color: isSelected ? '#fff' : '#475569',
+                              flexShrink: 0,
+                            }}>
+                              {isSelected ? '✓ Active' : 'Use'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div></p>
                   </div>
                 )}
                 {settingsTab === 'region' && (
@@ -17935,3 +18142,33 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     </div>
   );
 }
+
+function NeelShellEnhancer({ onNavigate }) {
+  const [themeId, setThemeId] = useState(() => localStorage.getItem('neel_active_theme') || 'morning_horizon');
+  const [favOpen, setFavOpen] = useState(true);
+  const [spacesOpen, setSpacesOpen] = useState(false);
+  const [favIds, setFavIds] = useState(() => {
+    try {
+      const s = localStorage.getItem('neel_favorite_app_ids');
+      return s ? JSON.parse(s) : ALL_NEEL_APPS_CATALOG.slice(0, 12).map(a => a.id);
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    const onTheme = (e) => setThemeId(e.detail || 'morning_horizon');
+    const onFav = (e) => setFavIds(Array.isArray(e.detail) ? e.detail : []);
+    window.addEventListener('neel-theme-changed', onTheme);
+    window.addEventListener('neel-favorites-updated', onFav);
+    return () => {
+      window.removeEventListener('neel-theme-changed', onTheme);
+      window.removeEventListener('neel-favorites-updated', onFav);
+    };
+  }, []);
+
+  const theme = NEEL_THEMES[themeId] || NEEL_THEMES.morning_horizon;
+  return null;
+}
+// neel-theme-changed-listener
+
+
+

@@ -22,8 +22,179 @@ import * as XLSX from 'xlsx';
    pre-bundled package list), so we talk to Supabase's REST/Auth endpoints
    directly with fetch. This is functionally equivalent to the SDK.
    ========================================================================= */
+
+/* =========================================================================
+   NEEL SUITE — 5 PROFESSIONAL ENTERPRISE THEMES & FAVORITES ENGINE
+   ========================================================================= */
+const NEEL_THEMES = {
+  morning_horizon: {
+    id: 'morning_horizon',
+    name: 'Morning Horizon',
+    tagline: 'Clean daylight enterprise blue & crisp alabaster surfaces',
+    shellBg: '#f5f6f7',
+    subBarBg: '#ffffff',
+    pageBg: '#f5f6f7',
+    cardBg: '#ffffff',
+    textMain: '#1d2d3e',
+    textSub: '#556b82',
+    accent: '#0070f2',
+    accentSoft: '#ebf5fe',
+    bannerGradient: 'linear-gradient(135deg, #0057d2 0%, #0070f2 60%, #1b90ff 100%)',
+    bannerText: '#ffffff',
+    border: '#d9e0e6',
+    badgeBg: '#0057d2',
+  },
+  industrial_copper: {
+    id: 'industrial_copper',
+    name: 'Industrial Copper (Neel Signature)',
+    tagline: 'Warm metallurgical copper & brushed anthracite tailored for tube mills',
+    shellBg: '#1c1917',
+    subBarBg: '#292524',
+    pageBg: '#f5f3ef',
+    cardBg: '#ffffff',
+    textMain: '#1c1917',
+    textSub: '#57534e',
+    accent: '#b45309',
+    accentSoft: '#fef3c7',
+    bannerGradient: 'linear-gradient(135deg, #7c2d12 0%, #b45309 55%, #d97706 100%)',
+    bannerText: '#ffffff',
+    border: '#e7e0d6',
+    badgeBg: '#b45309',
+  },
+  evening_horizon: {
+    id: 'evening_horizon',
+    name: 'Evening Horizon (Control Room Dark)',
+    tagline: 'Low-glare dark slate & cyan accents for 24×7 shop-floor terminals',
+    shellBg: '#0f172a',
+    subBarBg: '#1e293b',
+    pageBg: '#0b1120',
+    cardBg: '#1e293b',
+    textMain: '#f1f5f9',
+    textSub: '#94a3b8',
+    accent: '#38bdf8',
+    accentSoft: '#0c4a6e',
+    bannerGradient: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 55%, #0284c7 100%)',
+    bannerText: '#f8fafc',
+    border: '#334155',
+    badgeBg: '#0284c7',
+  },
+  emerald_precision: {
+    id: 'emerald_precision',
+    name: 'Emerald Precision',
+    tagline: 'High-contrast botanical teal & alabaster for quality & lab precision',
+    shellBg: '#064e3b',
+    subBarBg: '#065f46',
+    pageBg: '#f0fdf4',
+    cardBg: '#ffffff',
+    textMain: '#064e3b',
+    textSub: '#3f6212',
+    accent: '#059669',
+    accentSoft: '#d1fae5',
+    bannerGradient: 'linear-gradient(135deg, #064e3b 0%, #047857 60%, #10b981 100%)',
+    bannerText: '#ffffff',
+    border: '#bbf7d0',
+    badgeBg: '#059669',
+  },
+  quartz_executive: {
+    id: 'quartz_executive',
+    name: 'Quartz Titanium',
+    tagline: 'Executive minimalist graphite, cool quartz & royal indigo',
+    shellBg: '#18181b',
+    subBarBg: '#27272a',
+    pageBg: '#f4f4f5',
+    cardBg: '#ffffff',
+    textMain: '#18181b',
+    textSub: '#52525b',
+    accent: '#4f46e5',
+    accentSoft: '#e0e7ff',
+    bannerGradient: 'linear-gradient(135deg, #1e1b4b 0%, #3730a3 55%, #4f46e5 100%)',
+    bannerText: '#ffffff',
+    border: '#e4e4e7',
+    badgeBg: '#4f46e5',
+  },
+};
+
+/* NEEL_PATCH_V1 – theme engine */
+const NEEL_WORKSPACE_THEMES = Object.fromEntries(Object.values(NEEL_THEMES).map(t => [t.id, {
+  id: t.id, name: t.name, shortDesc: t.tagline, swatch: t.bannerGradient, accent: t.accent,
+}]));
+// Dark control-room theme keeps a soft slate page so dark text on the page stays readable.
+const NEEL_PAGE_OVERRIDE = { evening_horizon: '#e6ebf3' };
+function applyThemeToDocument(id) {
+  if (typeof document === 'undefined') return;
+  const t = NEEL_THEMES[id] || NEEL_THEMES.morning_horizon;
+  try { localStorage.setItem('neel_active_theme', t.id); } catch {}
+  const r = document.documentElement;
+  r.setAttribute('data-neel-theme', t.id);
+  r.style.setProperty('--neel-accent', t.accent);
+  r.style.setProperty('--neel-accent-soft', t.accentSoft === '#0c4a6e' ? '#e0f2fe' : t.accentSoft);
+  r.style.setProperty('--neel-accent-dark', t.badgeBg);
+  r.style.setProperty('--neel-banner', t.bannerGradient);
+  r.style.setProperty('--neel-banner-text', t.bannerText);
+  r.style.setProperty('--neel-page', NEEL_PAGE_OVERRIDE[t.id] || t.pageBg);
+  r.style.setProperty('--neel-text', t.textMain === '#f1f5f9' ? '#1d2d3e' : t.textMain);
+  let el = document.getElementById('neel-theme-css');
+  if (!el) { el = document.createElement('style'); el.id = 'neel-theme-css'; document.head.appendChild(el); }
+  el.textContent = [
+    'body{background:var(--neel-page,#f5f6f7)}',
+    '.fiori-shellbar{box-shadow:inset 0 3px 0 var(--neel-accent,#0a6ed1)!important}',
+    '.neel-home-banner{box-shadow:0 2px 10px rgba(0,0,0,.18)!important}',
+    '.neel-home-banner button{background:#fff!important;color:var(--neel-accent-dark,#0854a0)!important}',
+  ].join('\n');
+}
+try { applyThemeToDocument(localStorage.getItem('neel_active_theme') || 'morning_horizon'); } catch {}
+
+const ALL_NEEL_APPS_CATALOG = [
+  { id: 'fav-insp', title: 'Process Inspection Lots', sub: 'Worklist', tab: 'quality', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-stock', title: 'Display Stock Overview', sub: 'Raw & Finished Goods', tab: 'inventory', color: '#0070f2', category: 'Inventory Management' },
+  { id: 'fav-dpp', title: 'Production Plan (DPP)', sub: 'Daily Process Plan', tab: 'plan', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-stage', title: 'Stage Tracking', sub: 'Production Orders', tab: 'tracking', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-shop', title: 'Shop Floor Workbench', sub: 'Pull Operations', tab: 'shopfloor', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-qrel', title: 'Quality Release', sub: 'Inspection Usage Decision', tab: 'quality', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-qchold', title: 'QC Hold Section', sub: 'Held LWC Baskets', tab: 'qchold', color: '#b91c1c', category: 'Quality Management' },
+  { id: 'fav-lab', title: 'Lab & Mechanical', sub: 'Spectro & Tensile Tests', tab: 'lab', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-pgm', title: 'Post Goods Movement', sub: 'Material Documents', tab: 'inventory', color: '#5c2d91', category: 'Inventory Management' },
+  { id: 'fav-cycle', title: 'Cycle Count', sub: 'Physical Inventory Audit', tab: 'cyclecount', color: '#0070f2', category: 'Inventory Management' },
+  { id: 'fav-outb', title: 'Display Outbound Delivery', sub: 'Dispatch & Challans', tab: 'dispatch', color: '#0070f2', category: 'Shipping & SD' },
+  { id: 'fav-orders', title: 'Sales Orders', sub: 'Order Book & Tracking', tab: 'orders', color: '#0070f2', category: 'Shipping & SD' },
+  { id: 'fav-maint', title: 'My Maintenance Requests', sub: 'Breakdowns & PM', tab: 'maintenance', color: '#0070f2', category: 'Maintenance & Tooling' },
+  { id: 'fav-tool', title: 'Tooling & Die Life', sub: 'Die & Plug Register', tab: 'tooling', color: '#0070f2', category: 'Maintenance & Tooling' },
+  { id: 'fav-energy', title: 'Machine Energy', sub: 'kWh Utility Tracking', tab: 'energy', color: '#107e3e', category: 'Maintenance & Tooling' },
+  { id: 'fav-dpr', title: 'Daily Production Report', sub: 'Shift DPR & OEE', tab: 'dpr', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-spc', title: 'SPC Capability', sub: 'Cp / Cpk Charts', tab: 'spc', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-capa', title: 'CAPA Register', sub: 'Corrective Actions', tab: 'capa', color: '#0070f2', category: 'Quality Management' },
+  { id: 'fav-bom', title: 'BOM & MRP', sub: 'Material Requirements', tab: 'bom', color: '#0070f2', category: 'Production & Shop Floor' },
+  { id: 'fav-cost', title: 'Cost of Production', sub: 'Monthly Conversion Cost', tab: 'costing', color: '#0070f2', category: 'Administration' },
+  { id: 'fav-rep', title: 'Reports & Downloads', sub: 'Excel Packs & MTC', tab: 'reports', color: '#0070f2', category: 'Administration' },
+  { id: 'fav-master', title: 'System Master', sub: 'Standards, Access & Lists', tab: 'master', color: '#354a5f', category: 'Administration' },
+];
+
 const SUPABASE_URL = 'https://fvxcfntbajlwyagcgxea.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2eGNmbnRiYWpsd3lhZ2NneGVhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2MzYyNzMsImV4cCI6MjEwMzIxMjI3M30.VveMkmxLxvqfBMAQ7ytu_FT4mG8Bah8FlXWGdwtEamk';
+
+/* =========================================================================
+   INDIGO — MERCURE METALS & ALLOYS PVT. LTD. BRAND LOGO (MTC GROUP REMOVED)
+   ========================================================================= */
+function IndigoBrandLogo({ size = 'shell' }) {
+  if (size === 'lg') {
+    return (
+      <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 8, userSelect: 'none', marginBottom: 6 }}>
+        <img src="/indigo-icon.svg" alt="Copper Ribbon" style={{ height: 52, width: 'auto', display: 'block', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.2))' }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ background: '#0057d2', color: '#fff', fontWeight: 800, fontSize: 15, letterSpacing: '0.06em', padding: '4px 9px', borderRadius: 6 }}>NEEL</span>
+          <span style={{ fontWeight: 800, fontSize: 22, color: '#ffffff', letterSpacing: '-0.01em' }}>Suite</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 9, userSelect: 'none' }}>
+      <img src="/indigo-icon.svg" alt="Copper Ribbon" style={{ height: 28, width: 'auto', display: 'block', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.1))' }} />
+      <span style={{ background: 'var(--neel-accent-dark, #0057d2)', color: '#fff', fontWeight: 800, fontSize: 12, letterSpacing: '0.06em', padding: '4px 8px', borderRadius: 5, lineHeight: 1.1 }}>NEEL</span>
+      <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--neel-text, #1d2d3e)', letterSpacing: '-0.01em' }}>Suite Cloud</span>
+    </div>
+  );
+}
 
 async function supabaseSignIn(email, password) {
   const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
@@ -2405,7 +2576,8 @@ function IdentityScreen({ onSubmit }) {
     }}>
       <div style={{ width: '100%', maxWidth: 380 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 28, justifyContent: 'center' }}>
-          <TubeMark size={36} />
+          {/* NEEL_LOGIN_ICON_V1 */}
+          <img src="/indigo-icon.svg" alt="Neel" style={{ height: 40, width: 'auto', display: 'block', flexShrink: 0 }} />
           <div>
             <div className="font-display" style={{ color: '#fff', fontSize: 22, fontWeight: 600, letterSpacing: 0.3 }}>Neel Suite</div>
             <div style={{ color: '#8A929B', fontSize: 12, letterSpacing: 0.5 }}>One Thread The Whole Plant</div>
@@ -12762,6 +12934,11 @@ function HorizonMyHome({
   setTab, user, batches, maintenanceLogs, pullRequests, onOpenSettings,
 }) {
   const [appFilter, setAppFilter] = useState('Favorites');
+  const [selectMode, setSelectMode] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [favTitles, setFavTitles] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem('neel_home_fav_titles')); return Array.isArray(v) ? v : null; } catch { return null; }
+  });
   const firstName = (user?.name || 'User').split(/[@.\s]/)[0];
   const displayFirst = firstName.charAt(0).toUpperCase() + firstName.slice(1);
   const todayFormatted = new Date().toLocaleDateString('en-US', {
@@ -12835,15 +13012,23 @@ function HorizonMyHome({
     { title: 'System Master', subtitle: 'Standards, Access & Lists', icon: SlidersHorizontal, tab: 'master', cat: 'Recently Used', color: '#354a5f' },
   ].filter(a => canSeeTab(user, a.tab));
 
+  const isFav = (a) => (favTitles ? favTitles.includes(a.title) : a.cat === 'Favorites');
+  const saveFavs = (list) => {
+    setFavTitles(list);
+    try { localStorage.setItem('neel_home_fav_titles', JSON.stringify(list)); } catch {}
+  };
+  const removeFav = (title) => saveFavs(allApps.filter(isFav).map(a => a.title).filter(t => t !== title));
+  const addFav = (title) => saveFavs([...allApps.filter(isFav).map(a => a.title), title]);
+  const notFavApps = allApps.filter(a => !isFav(a));
   const visibleApps = appFilter === 'Favorites'
-    ? allApps
+    ? allApps.filter(isFav)
     : allApps.filter(a => a.cat === appFilter);
 
   return (
     <div style={{ marginBottom: 24 }}>
-      <div style={{
-        background: 'linear-gradient(90deg, #0057b8 0%, #0a6ed1 55%, #1b7fd6 100%)',
-        borderRadius: 10, padding: '18px 24px', color: '#fff',
+      <div className="neel-home-banner" style={{
+        background: 'var(--neel-banner, linear-gradient(90deg, #0057b8 0%, #0a6ed1 55%, #1b7fd6 100%))',
+        borderRadius: 10, padding: '18px 24px', color: 'var(--neel-banner-text, #fff)',
         display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12,
         boxShadow: '0 2px 8px rgba(10,110,209,0.18)', marginBottom: 20,
       }}>
@@ -12858,7 +13043,7 @@ function HorizonMyHome({
             type="button"
             onClick={() => setTab('dpr')}
             style={{
-              background: '#fff', color: '#0854a0', border: 'none', borderRadius: 6,
+              background: '#fff', color: 'var(--neel-accent-dark, #0854a0)', border: 'none', borderRadius: 6,
               padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
             }}
           >Recap</button>
@@ -12866,7 +13051,7 @@ function HorizonMyHome({
             type="button"
             onClick={onOpenSettings}
             style={{
-              background: '#fff', color: '#0854a0', border: 'none', borderRadius: 6,
+              background: '#fff', color: 'var(--neel-accent-dark, #0854a0)', border: 'none', borderRadius: 6,
               padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
             }}
           >My Home Settings</button>
@@ -12914,7 +13099,7 @@ function HorizonMyHome({
             <ChevronDown size={15} color={C.subtext} />
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 20, borderBottom: `1px solid ${C.border}`, marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20, borderBottom: `1px solid ${C.border}`, marginBottom: 14 }}>
           {['Favorites', 'Most Used', 'Recently Used', 'Recommended'].map(cat => {
             const active = appFilter === cat;
             return (
@@ -12925,12 +13110,36 @@ function HorizonMyHome({
                 style={{
                   background: 'none', border: 'none', padding: '8px 2px', cursor: 'pointer',
                   fontSize: 13, fontWeight: active ? 700 : 500,
-                  color: active ? '#0a6ed1' : C.subtext,
-                  borderBottom: active ? '2px solid #0a6ed1' : '2px solid transparent',
+                  color: active ? 'var(--neel-accent, #0a6ed1)' : C.subtext,
+                  borderBottom: active ? '2px solid var(--neel-accent, #0a6ed1)' : '2px solid transparent',
                 }}
               >{cat}</button>
             );
           })}
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center', paddingBottom: 6 }}>
+            {appFilter === 'Favorites' && (
+              <button
+                type="button"
+                data-testid="apps-deselect-btn"
+                onClick={() => setSelectMode(v => !v)}
+                style={{
+                  background: selectMode ? 'var(--neel-accent, #0a6ed1)' : '#fff',
+                  color: selectMode ? '#fff' : 'var(--neel-accent, #0a6ed1)',
+                  border: '1px solid var(--neel-accent, #0a6ed1)', borderRadius: 6,
+                  padding: '6px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer',
+                }}
+              >{selectMode ? 'Done' : 'Deselect'}</button>
+            )}
+            <button
+              type="button"
+              data-testid="apps-add-btn"
+              onClick={() => setAddOpen(true)}
+              style={{
+                background: 'none', border: 'none', color: 'var(--neel-accent, #0a6ed1)',
+                fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5,
+              }}
+            ><Plus size={14} /> Add Apps</button>
+          </div>
         </div>
         <div style={{
           background: 'rgba(255,255,255,0.65)', border: `1px solid ${C.borderSoft}`,
@@ -12941,14 +13150,22 @@ function HorizonMyHome({
             <button
               key={app.title}
               type="button"
-              onClick={() => setTab(app.tab)}
+              onClick={() => (selectMode && appFilter === 'Favorites' ? removeFav(app.title) : setTab(app.tab))}
               className="hover-lift"
               style={{
+                position: 'relative',
                 display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
                 background: '#fff', border: `1px solid ${C.borderSoft}`, borderRadius: 8,
                 cursor: 'pointer', textAlign: 'left', boxShadow: '0 1px 2px rgba(0,0,0,0.03)',
               }}
             >
+              {selectMode && appFilter === 'Favorites' && (
+                <span title="Remove from favorites" style={{
+                  position: 'absolute', top: -7, right: -7, width: 20, height: 20, borderRadius: '50%',
+                  background: '#bb0000', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  boxShadow: '0 1px 3px rgba(0,0,0,.3)',
+                }}><X size={12} /></span>
+              )}
               <div style={{
                 width: 34, height: 34, borderRadius: 8, background: app.color || '#0a6ed1',
                 color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
@@ -12963,6 +13180,41 @@ function HorizonMyHome({
           ))}
         </div>
       </div>
+
+      {addOpen && (
+        <div
+          role="dialog" aria-label="Add apps"
+          onClick={() => setAddOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 12, width: 'min(560px, 100%)', maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 40px rgba(0,0,0,.3)' }}>
+            <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>Add Apps to Favorites</div>
+              <button type="button" aria-label="Close" onClick={() => setAddOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><X size={18} /></button>
+            </div>
+            <div style={{ overflowY: 'auto', padding: 12 }}>
+              {notFavApps.length === 0 ? (
+                <div style={{ padding: 24, textAlign: 'center', fontSize: 13, color: C.subtext }}>All available apps are already in your favorites.</div>
+              ) : notFavApps.map(app => (
+                <button
+                  key={app.title} type="button" onClick={() => addFav(app.title)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: '#fff', border: `1px solid ${C.borderSoft}`, borderRadius: 8, marginBottom: 8, cursor: 'pointer', textAlign: 'left' }}
+                >
+                  <div style={{ width: 32, height: 32, borderRadius: 8, background: app.color || '#0a6ed1', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><app.icon size={17} /></div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{app.title}</div>
+                    <div style={{ fontSize: 11.5, color: C.subtext }}>{app.subtitle}</div>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--neel-accent, #0a6ed1)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Plus size={13} /> Add</span>
+                </button>
+              ))}
+            </div>
+            <div style={{ padding: '10px 18px', borderTop: `1px solid ${C.border}`, display: 'flex', justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setAddOpen(false)} style={{ background: 'var(--neel-accent, #0a6ed1)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -15360,6 +15612,7 @@ function Shell({
   const [userPopoverOpen, setUserPopoverOpen] = useState(false);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState('account');
+  const [, setSelectedTheme] = useState(null);
   const [quickAction, setQuickAction] = useState(null);
 
   useEffect(() => {
@@ -15391,7 +15644,7 @@ function Shell({
   ].filter(s => canSeeTab(user, s.key));
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f5f6f7', display: 'flex', flexDirection: 'column' }}>
+    <div className="neel-root" style={{ minHeight: '100vh', background: 'var(--neel-page, #f5f6f7)', display: 'flex', flexDirection: 'column' }}>
       {/* Morning Horizon Top Shell Bar */}
       <header className="fiori-shellbar no-print" style={{
         display: 'flex', alignItems: 'center', gap: 12,
@@ -15420,11 +15673,7 @@ function Shell({
           onClick={() => setTab('launchpad')}
           style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
         >
-          <div style={{
-            background: 'linear-gradient(135deg, #0057b8 0%, #0a6ed1 100%)', color: '#fff',
-            fontWeight: 800, fontSize: 12, padding: '4px 8px', borderRadius: 4, letterSpacing: 0.5,
-          }}>NEEL</div>
-          <span className="font-display" style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>Suite Cloud</span>
+          <IndigoBrandLogo size="shell" />
         </div>
 
         <button
@@ -15522,8 +15771,8 @@ function Shell({
               style={{
                 height: '100%', background: 'none', border: 'none', cursor: 'pointer',
                 fontSize: 12.5, fontWeight: active ? 700 : 500,
-                color: active ? '#0a6ed1' : C.ink,
-                borderBottom: active ? '2px solid #0a6ed1' : '2px solid transparent',
+                color: active ? 'var(--neel-accent, #0a6ed1)' : C.ink,
+                borderBottom: active ? '2px solid var(--neel-accent, #0a6ed1)' : '2px solid transparent',
                 whiteSpace: 'nowrap', padding: '0 2px',
               }}
             >{s.label}</button>
@@ -15553,17 +15802,13 @@ function Shell({
                 onClick={() => { setTab('launchpad'); setLeftMenuOpen(false); }}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
-                  borderRadius: 6, border: tab === 'launchpad' ? '1px solid #0a6ed1' : '1px solid transparent',
-                  background: tab === 'launchpad' ? '#eaf3fc' : 'transparent',
+                  borderRadius: 6, border: tab === 'launchpad' ? '1px solid var(--neel-accent, #0a6ed1)' : '1px solid transparent',
+                  background: tab === 'launchpad' ? 'var(--neel-accent-soft, #eaf3fc)' : 'transparent',
                   color: C.ink, fontSize: 13, fontWeight: 600, cursor: 'pointer', textAlign: 'left',
                 }}
               >
                 <LayoutDashboard size={16} color="#0a6ed1" /> My Home
               </button>
-            </div>
-            <div style={{ padding: '10px 14px 6px', fontSize: 11.5, fontWeight: 700, color: C.subtext, display: 'flex', justifyContent: 'space-between' }}>
-              <span>Favorite Apps</span>
-              <ChevronDown size={14} />
             </div>
             <div style={{ overflowY: 'auto', flex: 1, padding: '0 8px 8px' }}>
               {navGroups.map(group => (
@@ -15581,12 +15826,12 @@ function Shell({
                         style={{
                           width: '100%', display: 'flex', alignItems: 'center', gap: 10,
                           padding: '8px 10px', borderRadius: 6, border: 'none',
-                          background: active ? '#eaf3fc' : 'transparent',
+                          background: active ? 'var(--neel-accent-soft, #eaf3fc)' : 'transparent',
                           color: active ? '#0854a0' : C.ink,
                           fontSize: 13, fontWeight: active ? 700 : 500, cursor: 'pointer', textAlign: 'left',
                         }}
                       >
-                        <n.icon size={15} color={active ? '#0a6ed1' : C.subtext} />
+                        <n.icon size={15} color={active ? 'var(--neel-accent, #0a6ed1)' : C.subtext} />
                         {n.label}
                       </button>
                     );
@@ -15619,7 +15864,7 @@ function Shell({
             <div style={{ padding: '22px 20px 16px', textAlign: 'center', borderBottom: `1px solid ${C.borderSoft}` }}>
               <div style={{
                 width: 68, height: 68, borderRadius: '50%', background: '#d1e8ff', color: '#0854a0',
-                border: '2px solid #0a6ed1', margin: '0 auto 10px',
+                border: '2px solid var(--neel-accent, #0a6ed1)', margin: '0 auto 10px',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 700,
               }}>{initials(user.name)}</div>
               <div data-testid="user-panel-name" style={{ fontWeight: 700, fontSize: 15, color: C.ink }}>
@@ -15664,7 +15909,7 @@ function Shell({
                 onClick={() => { setUserPopoverOpen(false); onLogout(); }}
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 6, background: 'none',
-                  border: 'none', color: '#0a6ed1', fontSize: 13, fontWeight: 600,
+                  border: 'none', color: 'var(--neel-accent, #0a6ed1)', fontSize: 13, fontWeight: 600,
                   cursor: 'pointer', padding: '6px 10px', borderRadius: 6,
                 }}
               >
@@ -15712,8 +15957,8 @@ function Shell({
                       style={{
                         width: '100%', padding: '12px 16px', textAlign: 'left', border: 'none',
                         borderBottom: `1px solid ${C.borderSoft}`, cursor: 'pointer',
-                        background: active ? '#eaf3fc' : 'transparent',
-                        borderLeft: active ? '3px solid #0a6ed1' : '3px solid transparent',
+                        background: active ? 'var(--neel-accent-soft, #eaf3fc)' : 'transparent',
+                        borderLeft: active ? '3px solid var(--neel-accent, #0a6ed1)' : '3px solid transparent',
                       }}
                     >
                       <div style={{ fontSize: 13, fontWeight: 600, color: C.ink }}>{item.title}</div>
@@ -15747,7 +15992,56 @@ function Shell({
                 {settingsTab === 'appearance' && (
                   <div>
                     <h3 style={{ fontSize: 16, fontWeight: 700, marginTop: 0 }}>Theme</h3>
-                    <p style={{ fontSize: 13, color: C.subtext }}>Morning Horizon theme is active across Neel Suite.</p>
+                    <p style={{ fontSize: 13, color: C.subtext }}>Choose a visual theme for your workspace (applies live across banners, shell & cards):
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8, marginTop: 10, maxHeight: 245, overflowY: 'auto', overflowX: 'hidden', paddingRight: 2 }}>
+                      {Object.values(NEEL_WORKSPACE_THEMES).map(t => {
+                        const currentTheme = localStorage.getItem('neel_active_theme') || 'morning_horizon';
+                        const isSelected = currentTheme === t.id;
+                        return (
+                          <div
+                            key={t.id}
+                            onClick={() => {
+                              applyThemeToDocument(t.id);
+                              // Force immediate react state update in settings modal if available
+                              try { setSelectedTheme(t.id); } catch {}
+                              window.dispatchEvent(new CustomEvent('neel-theme-changed', { detail: t.id }));
+                            }}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 8,
+                              padding: '9px 11px',
+                              borderRadius: 8,
+                              border: isSelected ? `2px solid ${t.accent}` : '1px solid #d9e0e6',
+                              background: isSelected ? '#f0f7ff' : '#ffffff',
+                              cursor: 'pointer',
+                              transition: 'all 0.15s ease',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+                              <div style={{ width: 26, height: 26, borderRadius: 6, background: t.swatch, flexShrink: 0, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.12)' }} />
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#1d2d3e', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</div>
+                                <div style={{ fontSize: 10.5, color: '#556b82', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.shortDesc}</div>
+                              </div>
+                            </div>
+                            <span style={{
+                              fontSize: 10.5,
+                              fontWeight: 700,
+                              whiteSpace: 'nowrap',
+                              padding: '3px 8px',
+                              borderRadius: 999,
+                              background: isSelected ? t.accent : '#f1f5f9',
+                              color: isSelected ? '#fff' : '#475569',
+                              flexShrink: 0,
+                            }}>
+                              {isSelected ? '✓ Active' : 'Use'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div></p>
                   </div>
                 )}
                 {settingsTab === 'region' && (
@@ -17956,3 +18250,33 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     </div>
   );
 }
+
+function NeelShellEnhancer({ onNavigate }) {
+  const [themeId, setThemeId] = useState(() => localStorage.getItem('neel_active_theme') || 'morning_horizon');
+  const [favOpen, setFavOpen] = useState(true);
+  const [spacesOpen, setSpacesOpen] = useState(false);
+  const [favIds, setFavIds] = useState(() => {
+    try {
+      const s = localStorage.getItem('neel_favorite_app_ids');
+      return s ? JSON.parse(s) : ALL_NEEL_APPS_CATALOG.slice(0, 12).map(a => a.id);
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    const onTheme = (e) => setThemeId(e.detail || 'morning_horizon');
+    const onFav = (e) => setFavIds(Array.isArray(e.detail) ? e.detail : []);
+    window.addEventListener('neel-theme-changed', onTheme);
+    window.addEventListener('neel-favorites-updated', onFav);
+    return () => {
+      window.removeEventListener('neel-theme-changed', onTheme);
+      window.removeEventListener('neel-favorites-updated', onFav);
+    };
+  }, []);
+
+  const theme = NEEL_THEMES[themeId] || NEEL_THEMES.morning_horizon;
+  return null;
+}
+// neel-theme-changed-listener
+
+
+
