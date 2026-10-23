@@ -153,7 +153,7 @@ const ALL_NEEL_APPS_CATALOG = [
   { id: 'fav-qrel', title: 'Quality Release', sub: 'Inspection Usage Decision', tab: 'quality', color: '#0070f2', category: 'Quality Management' },
   { id: 'fav-qchold', title: 'QC Hold Section', sub: 'Held LWC Baskets', tab: 'qchold', color: '#b91c1c', category: 'Quality Management' },
   { id: 'fav-lab', title: 'Lab & Mechanical', sub: 'Spectro & Tensile Tests', tab: 'lab', color: '#0070f2', category: 'Quality Management' },
-  { id: 'fav-pgm', title: 'Post Goods Movement', sub: 'Material Documents', tab: 'inventory', color: '#5c2d91', category: 'Inventory Management' },
+  { id: 'fav-pgm', title: 'Post Goods Movement', sub: 'Material Documents', tab: 'migo', color: '#5c2d91', category: 'Inventory Management' },
   { id: 'fav-cycle', title: 'Cycle Count', sub: 'Physical Inventory Audit', tab: 'cyclecount', color: '#0070f2', category: 'Inventory Management' },
   { id: 'fav-outb', title: 'Display Outbound Delivery', sub: 'Dispatch & Challans', tab: 'dispatch', color: '#0070f2', category: 'Shipping & SD' },
   { id: 'fav-orders', title: 'Sales Orders', sub: 'Order Book & Tracking', tab: 'orders', color: '#0070f2', category: 'Shipping & SD' },
@@ -3136,6 +3136,27 @@ const ENERGY_MACHINES = [
 
 const thStyle = { padding: '10px 14px', color: C.subtext, textTransform: 'uppercase', fontSize: 11.5 };
 
+/* NEEL_TOOLING_V1 */
+function TlModal({ title, onClose, children, footer, width }) {
+  return (
+    <div role="dialog" aria-label={title} onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10, width: 'min(' + (width || 560) + 'px, 100%)', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 40px rgba(0,0,0,.3)' }}>
+        <div style={{ padding: '12px 18px', borderBottom: '1px solid ' + C.border, fontSize: 15, fontWeight: 700, color: C.ink }}>{title}</div>
+        <div style={{ padding: 16, overflowY: 'auto' }}>{children}</div>
+        {footer && <div style={{ padding: '10px 18px', borderTop: '1px solid ' + C.border, display: 'flex', justifyContent: 'flex-end', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+function tlShiftKey(key, n) {
+  const p = String(key).split('-').map(Number);
+  const dt = new Date(p[0], p[1] - 1, p[2] - n);
+  return dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
+}
+const tlNum = (v) => Math.round((Number(v) || 0) * 100) / 100;
+const tlRupee = (v) => '\u20B9' + Math.round(Number(v) || 0).toLocaleString('en-IN');
+
 function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishing, onDeleteDie, user }) {
   const ctx = useContext(ReportCtx) || {};
   const batches = ctx.batches || [];
@@ -3156,6 +3177,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
   const [instForm, setInstForm] = useState({ id: '', consumable_master_id: 'cm-1', current_size_mm: '15.0', machine_id: 'CASC-01' });
   const [runInput, setRunInput] = useState({});
   const [reboreModal, setReboreModal] = useState(null); // { instance, newSize: '', notes: '' }
+  const [delInst, setDelInst] = useState(null);
 
   // --- Sub-tab 2: Packaging BOM & Variance state ---
   const [packLine, setPackLine] = useState('LWC');
@@ -3163,9 +3185,15 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
   const [packOrderRef, setPackOrderRef] = useState('');
   const [actualPackIssues, setActualPackIssues] = useState({});
   const [packAuditMsg, setPackAuditMsg] = useState('');
+  const [pkPeriod, setPkPeriod] = useState('month');
+  const [openPack, setOpenPack] = useState(null);
+  const [packActuals, setPackActuals] = useState({});
+  const [packSettings, setPackSettings] = useSyncedStore('ctpm:packaging_settings', { skipped: [] });
 
   // --- Sub-tab 3: Returnable Assets state ---
   const [retForm, setRetForm] = useState({ customer: '', assetCode: 'PK-LWC-BOBBIN', type: 'dispatch', qty: '', ref: '' });
+  const [editRet, setEditRet] = useState(null);
+  const [delRet, setDelRet] = useState(null);
 
   // --- Sub-tab 4: Master Catalog state ---
   const [showAddCat, setShowAddCat] = useState(false);
@@ -3173,6 +3201,8 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
   const [customApplies, setCustomApplies] = useState([]);
   const [newCatInput, setNewCatInput] = useState('');
   const [newAppliesInput, setNewAppliesInput] = useState('');
+  const [editCat, setEditCat] = useState(null);
+  const [delCat, setDelCat] = useState(null);
   const [catForm, setCatForm] = useState({
     code: '', name: '', category: 'Carbide Die', applies_to: 'LWC',
     target_life_meters: '', target_life_kg: '', standard_qty_per_unit: '',
@@ -3331,6 +3361,176 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
     );
     setTimeout(() => setPackAuditMsg(''), 6000);
   };
+
+  // ---- Tooling & packaging additions: delete / edit, automatic packing consumption ----
+  const handleDeleteInstance = (inst) => {
+    setInstances(prev => prev.filter(x => x.id !== inst.id));
+    if (onDeleteDie) onDeleteDie(inst.id);
+    setDelInst(null);
+  };
+
+  const openEditCat = (item) => setEditCat({
+    id: item.id, oldCode: item.code, code: item.code, name: item.name, category: item.category, applies_to: item.applies_to,
+    target_life_meters: String(item.target_life_meters || ''), target_life_kg: String(item.target_life_kg || ''),
+    standard_qty_per_unit: String(item.standard_qty_per_unit || ''), unit_cost: String(item.unit_cost || ''),
+    min_stock_level: String(item.min_stock_level || ''), stock_qty: String(item.stock_qty === undefined ? '' : item.stock_qty),
+    uom: item.uom || 'pcs', err: '',
+  });
+  const saveEditCat = () => {
+    const f = editCat; if (!f) return;
+    const code = f.code.trim().toUpperCase();
+    if (!code || !f.name.trim()) { setEditCat({ ...f, err: 'Code and description are required.' }); return; }
+    if (masterList.some(m => m.id !== f.id && String(m.code).toUpperCase() === code)) { setEditCat({ ...f, err: 'Another catalog item already uses the code ' + code + '.' }); return; }
+    setMasterList(prev => prev.map(m => m.id === f.id ? {
+      ...m, code, name: f.name.trim(), category: f.category, applies_to: f.applies_to,
+      target_life_meters: Number(f.target_life_meters) || 0, target_life_kg: Number(f.target_life_kg) || 0,
+      standard_qty_per_unit: Number(f.standard_qty_per_unit) || 0, unit_cost: Number(f.unit_cost) || 0,
+      min_stock_level: Number(f.min_stock_level) || 0, stock_qty: Number(f.stock_qty) || 0, uom: f.uom || 'pcs',
+    } : m));
+    // returnable records keep pointing at the item when its code or name changes
+    setReturnables(prev => prev.map(r => r.assetCode === f.oldCode ? { ...r, assetCode: code, assetName: f.name.trim() } : r));
+    setEditCat(null);
+  };
+  const catUsage = (item) => ({
+    tools: instances.filter(i => i.consumable_master_id === item.id).length,
+    returnables: returnables.filter(r => r.assetCode === item.code).length,
+    txs: transactions.filter(t => t.consumable_id === item.id).length,
+  });
+  const confirmDeleteCat = () => {
+    if (!delCat) return;
+    if (catUsage(delCat).tools > 0) return;
+    setMasterList(prev => prev.filter(m => m.id !== delCat.id));
+    setDelCat(null);
+  };
+
+  const openEditRet = (r) => setEditRet({
+    id: r.id, customer: r.customer, assetCode: r.assetCode, origCode: r.assetCode,
+    sentQty: String(r.sentQty), returnedQty: String(r.returnedQty), origReturned: Number(r.returnedQty) || 0,
+    lastUpdated: r.lastUpdated || todayKey(), adjustStock: true, err: '',
+  });
+  const saveEditRet = () => {
+    const f = editRet; if (!f) return;
+    const sent = Number(f.sentQty); const ret = Number(f.returnedQty);
+    if (!f.customer.trim()) { setEditRet({ ...f, err: 'Enter the customer name.' }); return; }
+    if (!(sent >= 0) || !(ret >= 0)) { setEditRet({ ...f, err: 'Quantities must be zero or more.' }); return; }
+    if (ret > sent) { setEditRet({ ...f, err: 'Returned quantity cannot be more than the quantity sent out.' }); return; }
+    if (returnables.some(r => r.id !== f.id && String(r.customer).toLowerCase() === f.customer.trim().toLowerCase() && r.assetCode === f.assetCode)) {
+      setEditRet({ ...f, err: 'A record for this customer and asset already exists. Edit that one instead.' }); return;
+    }
+    const cat = masterList.find(m => m.code === f.assetCode);
+    setReturnables(prev => prev.map(r => r.id === f.id ? {
+      ...r, customer: f.customer.trim(), assetCode: f.assetCode, assetName: cat ? cat.name : r.assetName,
+      sentQty: sent, returnedQty: ret, lastUpdated: f.lastUpdated || todayKey(),
+    } : r));
+    const delta = ret - f.origReturned;
+    if (f.adjustStock && delta !== 0 && cat && f.assetCode === f.origCode) {
+      setMasterList(prev => prev.map(m => m.id === cat.id ? { ...m, stock_qty: Math.max(0, (Number(m.stock_qty) || 0) + delta) } : m));
+      setTransactions(prev => [{
+        id: 'TX-' + uid().toUpperCase(), at: new Date().toISOString(), consumable_id: cat.id, instance_id: '',
+        machine_id: 'Customer Return', production_order_id: f.customer.trim(), action: delta > 0 ? 'Returned' : 'Return Corrected',
+        qty_issued: Math.abs(delta), reason_for_removal: 'N/A', by: (user && user.name) || 'Store',
+      }, ...prev]);
+    }
+    setEditRet(null);
+  };
+  const confirmDeleteRet = () => {
+    if (!delRet) return;
+    setReturnables(prev => prev.filter(r => r.id !== delRet.id));
+    setDelRet(null);
+  };
+
+  // --- Automatic packing consumption: packing records x standard BOM ---
+  const bomFor = (line) => masterList.filter(m =>
+    !TOOL_CATEGORY_SET.has(m.category) &&
+    Number(m.standard_qty_per_unit) > 0 &&
+    (m.applies_to === line || m.applies_to === 'All' || (line === 'LWC' && m.applies_to === 'PKG-02 (LWC)') || (line === 'PCC' && m.applies_to === 'PKG-01 (PCC)'))
+  );
+  const pkInPeriod = (key) => {
+    const t = todayKey();
+    if (pkPeriod === 'all') return true;
+    if (pkPeriod === 'today') return key === t;
+    if (pkPeriod === 'week') return key >= tlShiftKey(t, 6) && key <= t;
+    return String(key).slice(0, 7) === t.slice(0, 7);
+  };
+  const pkSkipped = packSettings.skipped || [];
+  const issuedBatchIds = useMemo(() => new Set(transactions.filter(t => t.action === 'Issued for Packing' && t.batch_id).map(t => t.batch_id)), [transactions]);
+  const packedBatches = useMemo(() => batches
+    .filter(b => b && b.flow && b.flow.packing && b.flow.packing.packedAt && ['LWC', 'PCC', 'CTL'].includes(b.route))
+    .map(b => {
+      const pk = b.flow.packing;
+      return {
+        b, line: b.route, at: pk.packedAt, key: isoToLocalKey(pk.packedAt), units: Number(pk.packUnits) || 0, kg: Number(pk.packedQty) || 0,
+        station: pk.station || '', label: pk.packUnitLabel || (b.route === 'LWC' ? 'pallets' : 'boxes'), orderNo: b.productionOrderNo || b.batchCode || b.id,
+      };
+    })
+    .sort((a, c) => String(c.at).localeCompare(String(a.at))), [batches]);
+  const pkAll = packedBatches.map(p => {
+    const kit = bomFor(p.line).map(item => ({ item, std: tlNum(p.units * Number(item.standard_qty_per_unit)) }));
+    return { ...p, kit, issued: issuedBatchIds.has(p.b.id), skipped: pkSkipped.includes(p.b.id), stdCost: kit.reduce((t, k) => t + k.std * (Number(k.item.unit_cost) || 0), 0) };
+  });
+  const pkReady = (p) => !p.issued && !p.skipped && p.units > 0 && p.kit.length > 0;
+  const pkRows = pkAll.filter(p => pkInPeriod(p.key));
+  const pkPendingRows = pkRows.filter(pkReady);
+  const pkLines = ['LWC', 'PCC', 'CTL'].map(line => {
+    const rows = pkRows.filter(p => p.line === line && !p.skipped);
+    return {
+      line, batches: rows.length, units: rows.reduce((t, p) => t + p.units, 0), kg: rows.reduce((t, p) => t + p.kg, 0),
+      cost: rows.reduce((t, p) => t + p.stdCost, 0), pending: rows.filter(pkReady).length, label: line === 'LWC' ? 'pallets' : 'boxes',
+    };
+  }).filter(l => l.line !== 'CTL' || l.batches > 0);
+  const pkAudit = (() => {
+    const map = {};
+    const ens = (item) => { if (!map[item.id]) map[item.id] = { item, expected: 0, pending: 0, issued: 0, issuedStd: 0 }; return map[item.id]; };
+    pkRows.filter(p => !p.skipped).forEach(p => p.kit.forEach(k => { const r = ens(k.item); r.expected += k.std; if (!p.issued) r.pending += k.std; }));
+    transactions.forEach(t => {
+      if (t.action !== 'Issued for Packing' || !pkInPeriod(isoToLocalKey(t.at))) return;
+      const item = masterById[t.consumable_id]; if (!item) return;
+      const r = ens(item); const q = Number(t.qty_issued) || 0;
+      r.issued += q; r.issuedStd += t.std_qty !== undefined ? (Number(t.std_qty) || 0) : q;
+    });
+    return Object.values(map).map(r => {
+      const variance = tlNum(r.issued - r.issuedStd);
+      return { ...r, expected: tlNum(r.expected), pending: tlNum(r.pending), issued: tlNum(r.issued), variance, pct: r.issuedStd > 0 ? variance / r.issuedStd * 100 : 0, costImpact: variance * (Number(r.item.unit_cost) || 0) };
+    }).sort((a, b) => b.costImpact - a.costImpact);
+  })();
+  const pkTotalImpact = pkAudit.reduce((t, r) => t + r.costImpact, 0);
+
+  const buildKitIssue = (p, actuals) => {
+    const txs = []; const deduct = {}; let alerts = 0;
+    p.kit.forEach(k => {
+      const rawV = actuals ? actuals[k.item.id] : undefined;
+      const act = rawV !== undefined && rawV !== '' ? Number(rawV) : k.std;
+      if (!(act >= 0)) return;
+      if (act > k.std * 1.05) alerts++;
+      deduct[k.item.id] = (deduct[k.item.id] || 0) + act;
+      txs.push({
+        id: 'TX-' + uid().toUpperCase(), at: new Date().toISOString(), consumable_id: k.item.id, instance_id: '',
+        machine_id: p.line === 'LWC' ? 'PKG-02 (LWC)' : p.line === 'PCC' ? 'PKG-01 (PCC)' : 'Packing',
+        production_order_id: String(p.orderNo), batch_id: p.b.id, line: p.line, packed_units: p.units,
+        action: 'Issued for Packing', qty_issued: act, std_qty: k.std, variance_qty: tlNum(act - k.std),
+        reason_for_removal: act > k.std ? 'Over-consumption Variance' : 'N/A', by: (user && user.name) || 'Packing / Store',
+      });
+    });
+    return { txs, deduct, alerts };
+  };
+  const issueKits = (list, actualsByBatch) => {
+    let allTxs = []; const deduct = {}; let alerts = 0;
+    list.forEach(p => {
+      const r = buildKitIssue(p, actualsByBatch ? actualsByBatch[p.b.id] : null);
+      allTxs = allTxs.concat(r.txs); alerts += r.alerts;
+      Object.keys(r.deduct).forEach(id => { deduct[id] = (deduct[id] || 0) + r.deduct[id]; });
+    });
+    if (!allTxs.length) return;
+    setMasterList(prev => prev.map(m => deduct[m.id] !== undefined ? { ...m, stock_qty: Math.max(0, (Number(m.stock_qty) || 0) - deduct[m.id]) } : m));
+    setTransactions(prev => allTxs.concat(prev));
+    setPackActuals({}); setOpenPack(null);
+    setPackAuditMsg(alerts > 0
+      ? '\u26A0\uFE0F Kit issued for ' + list.length + ' packing record(s) with ' + alerts + ' over-consumption alert(s).'
+      : '\u2705 Kit issued for ' + list.length + ' packing record(s) and deducted from Stores.');
+    setTimeout(() => setPackAuditMsg(''), 6000);
+  };
+  const skipPacking = (ids) => setPackSettings(prev => ({ ...prev, skipped: Array.from(new Set((prev.skipped || []).concat(ids))) }));
+  const unskipPacking = (id) => setPackSettings(prev => ({ ...prev, skipped: (prev.skipped || []).filter(x => x !== id) }));
 
   // Handlers: Returnable Bobbins & Pallets
   const handleRecordReturnable = () => {
@@ -3654,7 +3854,11 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                               <Button variant="danger" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => handleScrapInstance(inst, 'Normal Wear')}>
                                 Scrap
                               </Button>
+                              <Button variant="secondary" data-testid={'tool-delete-' + inst.id} style={{ padding: '5px 10px', fontSize: 12, color: C.red }} onClick={() => setDelInst(inst)}>Delete</Button>
                             </div>
+                          )}
+                          {inst.status === 'Scrapped' && (
+                            <Button variant="secondary" data-testid={'tool-delete-' + inst.id} style={{ padding: '5px 10px', fontSize: 12, color: C.red }} onClick={() => setDelInst(inst)}>Delete</Button>
                           )}
                           {(inst.history || []).length > 0 && (
                             <div style={{ fontSize: 11, color: C.faint, marginTop: 4 }}>
@@ -3677,9 +3881,143 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
          ===================================================================== */}
       {subTab === 'packaging' && (
         <div>
+          {/* NEEL_TOOLING_V1: automatic packing consumption */}
+          <Card style={{ marginBottom: 16, borderLeft: '4px solid ' + C.green }}>
+            <SectionTitle sub="Worked out automatically from the pallets / boxes that Packing records when a batch is finished. Nothing to type.">
+              Automatic Packing Consumption (LWC, PCC and Straight Tube)
+            </SectionTitle>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+              <SelectField label="Period" options={[{ value: 'today', label: 'Today' }, { value: 'week', label: 'Last 7 days' }, { value: 'month', label: 'This month' }, { value: 'all', label: 'All time' }]} value={pkPeriod} onChange={e => setPkPeriod(e.target.value)} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 14 }}>
+              {pkLines.map(l => (
+                <div key={l.line} data-testid={'pk-line-' + l.line} style={{ border: '1px solid ' + C.border, borderRadius: 10, padding: 12, background: C.panel }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.subtext, textTransform: 'uppercase' }}>{l.line === 'CTL' ? 'Straight Tube (CTL)' : l.line} packing</div>
+                  <div className="font-mono" style={{ fontSize: 20, fontWeight: 700, color: C.ink, marginTop: 4 }}>{l.units} {l.label}</div>
+                  <div style={{ fontSize: 12, color: C.subtext }}>{l.batches} batch(es) - {Math.round(l.kg).toLocaleString('en-IN')} kg</div>
+                  <div style={{ fontSize: 12.5, color: C.ink, marginTop: 6 }}>Expected packaging cost: <strong>{tlRupee(l.cost)}</strong></div>
+                  <div style={{ fontSize: 12, color: l.pending ? C.amber : C.green, fontWeight: 600, marginTop: 2 }}>{l.pending ? l.pending + ' kit(s) not issued yet' : 'All kits issued'}</div>
+                </div>
+              ))}
+              {pkLines.every(l => l.batches === 0) && <div style={{ fontSize: 13, color: C.subtext, padding: 8 }}>No packing records in this period yet.</div>}
+            </div>
+            <details style={{ fontSize: 13, color: C.subtext }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 600, color: C.ink }}>How this works</summary>
+              <ol style={{ margin: '8px 0 0 18px', lineHeight: 1.7 }}>
+                <li>Packing finishes a batch and enters the number of pallets (LWC) or boxes (PCC, Straight Tube).</li>
+                <li>Each material in the Master Catalog has a standard quantity per pallet / box (Std BOM Qty). Units packed x Std BOM = what the kit should use.</li>
+                <li>The kit shows below as "not issued yet". The Store confirms the real quantity (pre-filled with the standard) and issues it. Stores stock goes down.</li>
+                <li>The audit compares what Store actually issued with the standard. More than 5% over is flagged as an over-consumption alert.</li>
+                <li>Bobbins and pallets are returnable: when the customer sends them back, record it under A2 and Stores stock goes up again.</li>
+              </ol>
+            </details>
+          </Card>
+
+          <Card style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 14px', borderBottom: '1px solid ' + C.border }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>Packed batches ({pkRows.length})</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Button disabled={pkPendingRows.length === 0} onClick={() => issueKits(pkPendingRows, null)} style={{ padding: '6px 12px', fontSize: 12.5 }}>Issue all {pkPendingRows.length} pending kit(s) at standard</Button>
+                <Button variant="secondary" disabled={pkRows.filter(p => !p.issued && !p.skipped && p.key < todayKey()).length === 0} onClick={() => skipPacking(pkRows.filter(p => !p.issued && !p.skipped && p.key < todayKey()).map(p => p.b.id))} style={{ padding: '6px 12px', fontSize: 12.5 }}>Skip pending before today</Button>
+              </div>
+            </div>
+            {packAuditMsg && <div style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, color: packAuditMsg.includes('\u26A0') ? C.red : C.green }}>{packAuditMsg}</div>}
+            {pkRows.length === 0 ? <EmptyState title="No packed batches in this period" sub="Batches appear here as soon as Packing finishes them." /> : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 860 }}>
+                  <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>
+                    {['Packed on', 'Line', 'Order / Batch', 'Packed', 'Expected kit cost', 'Kit status', 'Action'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {pkRows.map(p => {
+                      const open = openPack === p.b.id;
+                      const status = p.skipped ? ['Skipped', 'default'] : p.issued ? ['Issued', 'green'] : p.units <= 0 ? ['No pallet / box count', 'red'] : p.kit.length === 0 ? ['No BOM for this line', 'default'] : ['Not issued yet', 'amber'];
+                      return (
+                        <React.Fragment key={p.b.id}>
+                          <tr style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                            <td style={{ padding: '10px 14px', color: C.subtext }}>{p.key}</td>
+                            <td style={{ padding: '10px 14px', fontWeight: 600 }}>{p.line}</td>
+                            <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 700, color: C.copperDark }}>{p.orderNo}{p.station ? <div style={{ fontSize: 11, color: C.faint, fontWeight: 400 }}>{p.station}</div> : null}</td>
+                            <td className="font-mono" style={{ padding: '10px 14px' }}>{p.units} {p.label}<div style={{ fontSize: 11, color: C.faint }}>{Math.round(p.kg).toLocaleString('en-IN')} kg</div></td>
+                            <td className="font-mono" style={{ padding: '10px 14px' }}>{tlRupee(p.stdCost)}</td>
+                            <td style={{ padding: '10px 14px' }}><Badge tone={status[1]}>{status[0]}</Badge></td>
+                            <td style={{ padding: '10px 14px' }}>
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                {pkReady(p) && <Button style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => issueKits([p], null)}>Issue at standard</Button>}
+                                {pkReady(p) && <Button variant="secondary" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => setOpenPack(open ? null : p.b.id)}>{open ? 'Close' : 'Enter actual'}</Button>}
+                                {pkReady(p) && <Button variant="secondary" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => skipPacking([p.b.id])}>Skip</Button>}
+                                {p.skipped && <Button variant="secondary" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => unskipPacking(p.b.id)}>Undo skip</Button>}
+                              </div>
+                            </td>
+                          </tr>
+                          {open && pkReady(p) && (
+                            <tr style={{ background: C.panelAlt }}>
+                              <td colSpan={7} style={{ padding: 12 }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
+                                  {p.kit.map(k => {
+                                    const v = packActuals[p.b.id] && packActuals[p.b.id][k.item.id];
+                                    const over = v !== undefined && v !== '' && Number(v) > k.std * 1.05;
+                                    return (
+                                      <div key={k.item.id} style={{ border: '1px solid ' + (over ? C.red : C.border), borderRadius: 8, padding: 10, background: '#fff' }}>
+                                        <div style={{ fontWeight: 600, fontSize: 12.5 }}>{k.item.name}</div>
+                                        <div className="font-mono" style={{ fontSize: 11, color: C.faint }}>{k.item.code} - Store stock {k.item.stock_qty} {k.item.uom}</div>
+                                        <div style={{ fontSize: 12, color: C.subtext, margin: '4px 0' }}>Standard: <strong>{k.std} {k.item.uom}</strong></div>
+                                        <input type="number" step="0.01" min="0" value={v !== undefined ? v : k.std} onChange={e => setPackActuals(prev => ({ ...prev, [p.b.id]: { ...(prev[p.b.id] || {}), [k.item.id]: e.target.value } }))}
+                                          style={{ width: 110, padding: '6px 8px', borderRadius: 6, border: '1px solid ' + (over ? C.red : C.border), fontWeight: 600 }} />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <div style={{ marginTop: 10 }}><Button onClick={() => issueKits([p], packActuals)}>Issue kit with these quantities</Button></div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
+          <Card style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 14px', borderBottom: '1px solid ' + C.border }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>Item-wise variance audit</div>
+              <div style={{ fontSize: 13, color: pkTotalImpact > 0 ? C.red : C.green, fontWeight: 700 }}>
+                {pkTotalImpact > 0 ? 'Over standard by ' + tlRupee(pkTotalImpact) : pkTotalImpact < 0 ? 'Under standard by ' + tlRupee(-pkTotalImpact) : 'On standard'}
+              </div>
+            </div>
+            {pkAudit.length === 0 ? <EmptyState title="Nothing to audit yet" sub="The audit fills in once Packing finishes batches and Store issues kits." /> : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 860 }}>
+                  <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>
+                    {['Item', 'Expected from packing', 'Issued by Store', 'Not issued yet', 'Variance', 'Cost impact', 'Status'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {pkAudit.map(r => {
+                      const st = r.issued === 0 ? (r.pending > 0 ? ['Not issued yet', 'amber'] : ['No activity', 'default']) : Math.abs(r.pct) <= 5 ? ['On standard', 'green'] : r.pct > 0 ? ['Over +' + tlNum(r.pct) + '%', 'red'] : ['Under ' + tlNum(r.pct) + '%', 'blue'];
+                      return (
+                        <tr key={r.item.id} style={{ borderTop: '1px solid ' + C.borderSoft, background: st[1] === 'red' ? C.redSoft : 'transparent' }}>
+                          <td style={{ padding: '10px 14px' }}><div style={{ fontWeight: 600 }}>{r.item.name}{RETURNABLE_CATEGORY_SET.has(r.item.category) ? <span style={{ marginLeft: 6 }}><Badge tone="blue">Returnable</Badge></span> : null}</div><div className="font-mono" style={{ fontSize: 11, color: C.faint }}>{r.item.code}</div></td>
+                          <td className="font-mono" style={{ padding: '10px 14px' }}>{r.expected} {r.item.uom}</td>
+                          <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 700 }}>{r.issued} {r.item.uom}</td>
+                          <td className="font-mono" style={{ padding: '10px 14px', color: r.pending ? C.amber : C.subtext }}>{r.pending} {r.item.uom}</td>
+                          <td className="font-mono" style={{ padding: '10px 14px', color: r.variance > 0 ? C.red : r.variance < 0 ? C.blue : C.subtext }}>{r.variance > 0 ? '+' : ''}{r.variance} {r.item.uom}</td>
+                          <td className="font-mono" style={{ padding: '10px 14px' }}>{r.costImpact === 0 ? '\u2014' : (r.costImpact > 0 ? '+' : '-') + tlRupee(Math.abs(r.costImpact))}</td>
+                          <td style={{ padding: '10px 14px' }}><Badge tone={st[1]}>{st[0]}</Badge></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+
           <Card style={{ marginBottom: 16, borderLeft: `4px solid ${C.copper}` }}>
-            <SectionTitle sub="Automatically calculates expected packaging consumption from standard BOM ratios and flags Store variance alerts if actual issues exceed standard.">
-              Line-Specific Packing Kit & Store Variance Calculator
+            <SectionTitle sub="Use this for rework, samples or packing that was not recorded on the shop floor. Enter the units packed and the real issue.">
+              Manual Kit Issue (only for packing that has no record above)
             </SectionTitle>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 14 }}>
               <SelectField label="Finishing / Packing Line" options={['LWC', 'PCC', 'CTL']} value={packLine} onChange={e => setPackLine(e.target.value)} />
@@ -3804,6 +4142,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                   <th style={thStyle}>Returned for Reuse</th>
                   <th style={thStyle}>Pending with Customer</th>
                   <th style={thStyle}>Last Updated</th>
+                  <th style={thStyle}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -3820,6 +4159,12 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                         <Badge tone={pending > 10 ? 'amber' : pending > 0 ? 'blue' : 'green'}>{pending} pcs pending</Badge>
                       </td>
                       <td style={{ padding: '10px 14px', color: C.faint }}>{r.lastUpdated}</td>
+                      <td style={{ padding: '10px 14px' }}>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Button variant="secondary" data-testid={'ret-edit-' + r.id} style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => openEditRet(r)}>Edit</Button>
+                          <Button variant="secondary" data-testid={'ret-delete-' + r.id} style={{ padding: '5px 10px', fontSize: 12, color: C.red }} onClick={() => setDelRet(r)}>Delete</Button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -3886,6 +4231,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                     <th style={thStyle}>Unit Cost</th>
                     <th style={thStyle}>Store Stock</th>
                     <th style={thStyle}>Min Reorder</th>
+                    <th style={thStyle}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3909,6 +4255,12 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                           {item.stock_qty} {item.uom} {low && '⚠️'}
                         </td>
                         <td className="font-mono" style={{ padding: '10px 14px', color: C.subtext }}>{item.min_stock_level} {item.uom}</td>
+                        <td style={{ padding: '10px 14px' }}>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <Button variant="secondary" data-testid={'cat-edit-' + item.code} style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => openEditCat(item)}>Edit</Button>
+                            <Button variant="secondary" data-testid={'cat-delete-' + item.code} style={{ padding: '5px 10px', fontSize: 12, color: C.red }} onClick={() => setDelCat(item)}>Delete</Button>
+                          </div>
+                        </td>
                       </tr>
                     );
                   })}
@@ -3995,6 +4347,79 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
             )}
           </Card>
         </div>
+      )}
+
+      {delInst && (
+        <TlModal title={'Delete tool ' + delInst.id + '?'} onClose={() => setDelInst(null)}
+          footer={<><Button variant="secondary" onClick={() => setDelInst(null)}>Cancel</Button><Button variant="danger" onClick={() => handleDeleteInstance(delInst)} data-testid="tool-delete-confirm">Delete tool</Button></>}>
+          <div style={{ fontSize: 13.5, color: C.ink, lineHeight: 1.6 }}>
+            This removes <strong>{delInst.id}</strong> ({(masterById[delInst.consumable_master_id] || {}).code || 'tool'}, {delInst.status}) and its wear history from the register.
+            Past store transactions stay in the log. This cannot be undone.
+          </div>
+        </TlModal>
+      )}
+      {editCat && (
+        <TlModal title={'Edit catalog item ' + editCat.oldCode} onClose={() => setEditCat(null)} width={720}
+          footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }}>{editCat.err}</span><Button variant="secondary" onClick={() => setEditCat(null)}>Cancel</Button><Button onClick={saveEditCat} data-testid="cat-save">Save changes</Button></>}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
+            <TextField label="Item Code" value={editCat.code} onChange={e => setEditCat({ ...editCat, code: e.target.value })} />
+            <TextField label="Item Description" value={editCat.name} onChange={e => setEditCat({ ...editCat, name: e.target.value })} />
+            <SelectField label="Category" options={allCategories} value={editCat.category} onChange={e => setEditCat({ ...editCat, category: e.target.value })} />
+            <SelectField label="Applies To" options={allAppliesTo} value={editCat.applies_to} onChange={e => setEditCat({ ...editCat, applies_to: e.target.value })} />
+            <TextField label="Target Life Meters (Tools)" type="number" value={editCat.target_life_meters} onChange={e => setEditCat({ ...editCat, target_life_meters: e.target.value })} />
+            <TextField label="Target Life kg (Tools)" type="number" value={editCat.target_life_kg} onChange={e => setEditCat({ ...editCat, target_life_kg: e.target.value })} />
+            <TextField label="Std Qty per Pallet / Box (Packaging)" type="number" step="0.01" value={editCat.standard_qty_per_unit} onChange={e => setEditCat({ ...editCat, standard_qty_per_unit: e.target.value })} />
+            <TextField label="Unit Cost (INR)" type="number" value={editCat.unit_cost} onChange={e => setEditCat({ ...editCat, unit_cost: e.target.value })} />
+            <TextField label="Min Stock Level (Reorder)" type="number" value={editCat.min_stock_level} onChange={e => setEditCat({ ...editCat, min_stock_level: e.target.value })} />
+            <TextField label="Store Stock" type="number" value={editCat.stock_qty} onChange={e => setEditCat({ ...editCat, stock_qty: e.target.value })} />
+            <SelectField label="UOM" options={['pcs', 'kg', 'liters', 'rolls', 'sets']} value={editCat.uom} onChange={e => setEditCat({ ...editCat, uom: e.target.value })} />
+          </div>
+        </TlModal>
+      )}
+      {delCat && (() => {
+        const u = catUsage(delCat);
+        return (
+          <TlModal title={'Delete ' + delCat.code + '?'} onClose={() => setDelCat(null)}
+            footer={<><Button variant="secondary" onClick={() => setDelCat(null)}>{u.tools > 0 ? 'Close' : 'Cancel'}</Button>{u.tools === 0 && <Button variant="danger" onClick={confirmDeleteCat} data-testid="cat-delete-confirm">Delete item</Button>}</>}>
+            <div style={{ fontSize: 13.5, color: C.ink, lineHeight: 1.6 }}>
+              {u.tools > 0 ? (
+                <span><strong>{delCat.code}</strong> cannot be deleted: {u.tools} serialized tool(s) use it. Delete or re-assign those tools first.</span>
+              ) : (
+                <span>
+                  Remove <strong>{delCat.code}</strong> - {delCat.name} from the Master Catalog?
+                  {u.returnables > 0 ? ' ' + u.returnables + ' returnable record(s) mention it and will keep their text.' : ''}
+                  {u.txs > 0 ? ' ' + u.txs + ' past store transaction(s) stay in the log.' : ''} This cannot be undone.
+                </span>
+              )}
+            </div>
+          </TlModal>
+        );
+      })()}
+      {editRet && (
+        <TlModal title="Edit returnable record" onClose={() => setEditRet(null)} width={640}
+          footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }}>{editRet.err}</span><Button variant="secondary" onClick={() => setEditRet(null)}>Cancel</Button><Button onClick={saveEditRet} data-testid="ret-save">Save changes</Button></>}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
+            <TextField label="Customer Name" value={editRet.customer} onChange={e => setEditRet({ ...editRet, customer: e.target.value })} />
+            <SelectField label="Returnable Asset"
+              options={masterList.filter(m => RETURNABLE_CATEGORY_SET.has(m.category) || m.code === editRet.assetCode).map(m => ({ value: m.code, label: m.code + ' - ' + m.name }))}
+              value={editRet.assetCode} onChange={e => setEditRet({ ...editRet, assetCode: e.target.value })} />
+            <TextField label="Sent Out (pcs)" type="number" min="0" value={editRet.sentQty} onChange={e => setEditRet({ ...editRet, sentQty: e.target.value })} />
+            <TextField label="Returned for Reuse (pcs)" type="number" min="0" value={editRet.returnedQty} onChange={e => setEditRet({ ...editRet, returnedQty: e.target.value })} />
+            <TextField label="Last Updated" type="date" value={editRet.lastUpdated} onChange={e => setEditRet({ ...editRet, lastUpdated: e.target.value })} />
+          </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, fontSize: 13, color: C.ink }}>
+            <input type="checkbox" checked={editRet.adjustStock} onChange={e => setEditRet({ ...editRet, adjustStock: e.target.checked })} />
+            Also change Store stock by the difference in returned quantity ({(Number(editRet.returnedQty) || 0) - editRet.origReturned >= 0 ? '+' : ''}{(Number(editRet.returnedQty) || 0) - editRet.origReturned})
+          </label>
+        </TlModal>
+      )}
+      {delRet && (
+        <TlModal title="Delete returnable record?" onClose={() => setDelRet(null)}
+          footer={<><Button variant="secondary" onClick={() => setDelRet(null)}>Cancel</Button><Button variant="danger" onClick={confirmDeleteRet} data-testid="ret-delete-confirm">Delete record</Button></>}>
+          <div style={{ fontSize: 13.5, color: C.ink, lineHeight: 1.6 }}>
+            Remove the record for <strong>{delRet.customer}</strong> - {delRet.assetCode} (sent {delRet.sentQty}, returned {delRet.returnedQty})? Store stock is not changed. This cannot be undone.
+          </div>
+        </TlModal>
       )}
     </div>
   );
@@ -12996,7 +13421,7 @@ function HorizonMyHome({
     { title: 'Quality Release', subtitle: 'Inspection Usage Decision', icon: ClipboardCheck, tab: 'quality', cat: 'Favorites', color: '#0a6ed1' },
     { title: 'QC Hold Section', subtitle: 'Held LWC Baskets', icon: AlertOctagon, tab: 'qchold', cat: 'Favorites', color: '#bb0000' },
     { title: 'Lab & Mechanical', subtitle: 'Spectro & Tensile Tests', icon: Activity, tab: 'lab', cat: 'Most Used', color: '#0a6ed1' },
-    { title: 'Post Goods Movement', subtitle: 'Material Documents', icon: FileSpreadsheet, tab: 'matdocs', cat: 'Favorites', color: '#5c2d91' },
+    { title: 'Post Goods Movement', subtitle: 'Material Documents', icon: FileSpreadsheet, tab: 'migo', cat: 'Favorites', color: '#5c2d91' },
     { title: 'Cycle Count', subtitle: 'Physical Inventory Audit', icon: ScanLine, tab: 'cyclecount', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Display Outbound Delivery', subtitle: 'Dispatch & Challans', icon: Package, tab: 'dispatch', cat: 'Favorites', color: '#0a6ed1' },
     { title: 'Sales Orders', subtitle: 'Order Book & Tracking', icon: ClipboardList, tab: 'orders', cat: 'Favorites', color: '#0a6ed1' },
@@ -14967,6 +15392,698 @@ function Launchpad({ setTab, user }) {
    inventory log into something auditable: you can always answer "why did
    this quantity change, when, by whom, against which order".
    ========================================================================= */
+/* NEEL_INV_MODULE_V1 - Inventory Management module */
+const INV_SLOC_RAW = 'RM01';
+const INV_SLOC_FIN = 'FG01';
+const INV_CURRENCIES = ['INR', 'USD', 'EUR'];
+const INV_CONSUME = ['261', '551', '601'];
+const invToday = () => new Date().toISOString().slice(0, 10);
+const invDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+const invShiftDay = (d, n) => new Date(new Date(d + 'T00:00:00Z').getTime() + n * 86400000).toISOString().slice(0, 10);
+const invNum = (n) => (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+const invMoney = (v, cur) => (Number(v) > 0 ? cur + ' ' + invNum(v) : '\u2014');
+const invInp = { padding: '6px 8px', borderRadius: 4, border: '1px solid ' + C.border, fontSize: 12.5, background: '#fff', color: C.ink, boxSizing: 'border-box', minWidth: 0 };
+const invBtn = { background: 'var(--neel-accent, #0a6ed1)', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 18px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' };
+const invBtnGhost = { background: 'none', border: 'none', color: 'var(--neel-accent, #0a6ed1)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' };
+const invTh = { padding: '8px 12px', fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase', whiteSpace: 'nowrap', textAlign: 'left' };
+
+function invMaterials(rawItems, finishedItems) {
+  const rawList = (rawItems || []).map(r => ({
+    key: 'r' + r.id, number: materialNumberForRaw(r.name), name: r.name, group: r.kind || 'Other',
+    type: 'Raw material', plant: PLANT_CODE, sloc: INV_SLOC_RAW, qty: Number(r.qty) || 0, unit: r.unit || 'kg',
+    price: Number(r.price || r.rate || 0),
+  }));
+  const finList = (finishedItems || []).map(f => ({
+    key: 'f' + f.id, number: materialNumberForSpec(f.spec), name: f.spec, group: f.category || 'Finished goods',
+    type: 'Finished goods', plant: PLANT_CODE, sloc: INV_SLOC_FIN, qty: Number(f.qty) || 0, unit: f.unit || 'kg',
+    price: Number(f.price || f.rate || 0),
+  }));
+  return rawList.concat(finList).filter(m => m.number);
+}
+function invSign(d) { const t = MOVEMENT_TYPES[d.movementType]; return t ? t.sign : 0; }
+function invDay(d) { return String(d.postingDate || '').slice(0, 10); }
+function invStockAt(m, docs, date) {
+  let q = m.qty;
+  (docs || []).forEach(d => {
+    if (d.materialNumber !== m.number) return;
+    const sg = invSign(d); if (!sg) return;
+    if (invDay(d) > date) q -= sg * Math.abs(Number(d.quantity) || 0);
+  });
+  return Math.max(0, q);
+}
+function invSum(docs, number, from, to, pred) {
+  let t = 0;
+  (docs || []).forEach(d => {
+    if (d.materialNumber !== number) return;
+    const day = invDay(d); if (day < from || day > to) return;
+    if (pred(invSign(d), d.movementType)) t += Math.abs(Number(d.quantity) || 0);
+  });
+  return t;
+}
+function invLastMove(docs, number) {
+  let last = '';
+  (docs || []).forEach(d => { if (d.materialNumber === number && invDay(d) > last) last = invDay(d); });
+  return last;
+}
+function invHas(a, b) { return !b || String(a || '').toLowerCase().includes(String(b).toLowerCase()); }
+function invMatMatch(sel, m) {
+  const items = (sel && sel.items) || []; const conds = (sel && sel.conditions) || [];
+  if (!items.length && !conds.length) return true;
+  if (items.includes(m.number)) return true;
+  const num = m.number.toLowerCase(); const nm = String(m.name || '').toLowerCase();
+  return conds.some(c => {
+    const v = String(c.value || '').toLowerCase(); if (!v) return false;
+    if (c.op === 'equals') return num === v || nm === v;
+    if (c.op === 'starts') return num.startsWith(v) || nm.startsWith(v);
+    return (num + ' ' + nm).includes(v);
+  });
+}
+function invBaseFilter(v, m) {
+  return invMatMatch(v.material, m) && invHas(m.plant, v.plant) && invHas(m.sloc, v.sloc) && invHas(m.group, v.group) && invHas(m.type, v.type);
+}
+
+function InvModal({ title, onClose, children, footer, width }) {
+  return (
+    <div role="dialog" aria-label={title} onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', zIndex: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10, width: 'min(' + (width || 720) + 'px, 100%)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 40px rgba(0,0,0,.3)' }}>
+        <div style={{ padding: '12px 18px', borderBottom: '1px solid ' + C.border, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.ink }}>{title}</div>
+          <button type="button" aria-label="Close" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><X size={18} /></button>
+        </div>
+        <div style={{ overflowY: 'auto', padding: 14, flex: 1 }}>{children}</div>
+        {footer && <div style={{ padding: '10px 18px', borderTop: '1px solid ' + C.border, display: 'flex', justifyContent: 'flex-end', gap: 10, alignItems: 'center' }}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+function MaterialValueHelp({ materials, value, onOk, onCancel, single }) {
+  const [tab, setTab] = useState('search');
+  const [q, setQ] = useState('');
+  const [applied, setApplied] = useState('');
+  const [items, setItems] = useState((value && value.items) || []);
+  const [conds, setConds] = useState((value && value.conditions) || []);
+  const shown = materials.filter(m => !applied || (m.number + ' ' + m.name + ' ' + m.group).toLowerCase().includes(applied.toLowerCase()));
+  const toggle = (n) => setItems(prev => single ? (prev.includes(n) ? [] : [n]) : (prev.includes(n) ? prev.filter(x => x !== n) : prev.concat([n])));
+  const tabBtn = (k, label) => (
+    <button type="button" onClick={() => setTab(k)} style={{ background: 'none', border: 'none', borderBottom: tab === k ? '2px solid var(--neel-accent, #0a6ed1)' : '2px solid transparent', color: tab === k ? 'var(--neel-accent, #0a6ed1)' : C.ink, fontWeight: 700, fontSize: 13, padding: '6px 4px', cursor: 'pointer', marginRight: 16 }}>{label}</button>
+  );
+  return (
+    <InvModal title="Material" onClose={onCancel} width={760}
+      footer={<>
+        <span style={{ marginRight: 'auto', fontSize: 12.5, color: C.subtext }}>{items.length + conds.filter(c => c.value).length === 0 ? 'No Items or Conditions Selected' : items.length + ' item(s), ' + conds.filter(c => c.value).length + ' condition(s) selected'}</span>
+        <button type="button" style={invBtn} onClick={() => onOk({ items, conditions: conds.filter(c => c.value) })}>OK</button>
+        <button type="button" style={invBtnGhost} onClick={onCancel}>Cancel</button>
+      </>}>
+      <div style={{ marginBottom: 10 }}>{tabBtn('search', 'Search and Select')}{!single && tabBtn('cond', 'Define Conditions')}</div>
+      {tab === 'search' ? (
+        <div>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <Search size={14} style={{ position: 'absolute', left: 8, top: 9, color: C.faint }} />
+              <input value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') setApplied(q); }} placeholder="Search" style={Object.assign({}, invInp, { width: '100%', paddingLeft: 28 })} />
+            </div>
+            <button type="button" style={invBtn} onClick={() => setApplied(q)}>Go</button>
+          </div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 6 }}>Items ({shown.length})</div>
+          <div style={{ border: '1px solid ' + C.border, borderRadius: 6, maxHeight: 300, overflow: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead><tr style={{ background: C.panelAlt }}><th style={invTh}></th><th style={invTh}>Material</th><th style={invTh}>Plant</th><th style={invTh}>Material Group</th><th style={invTh}>Material Type</th></tr></thead>
+              <tbody>
+                {shown.length === 0 && <tr><td colSpan={5} style={{ padding: 16, textAlign: 'center', color: C.subtext }}>No materials found.</td></tr>}
+                {shown.map(m => (
+                  <tr key={m.key} onClick={() => toggle(m.number)} style={{ borderTop: '1px solid ' + C.borderSoft, cursor: 'pointer', background: items.includes(m.number) ? 'var(--neel-accent-soft, #eaf3fc)' : 'transparent' }}>
+                    <td style={{ padding: '6px 12px' }}><input type="checkbox" readOnly checked={items.includes(m.number)} /></td>
+                    <td style={{ padding: '6px 12px' }}><div style={{ fontWeight: 600, color: C.ink }}>{m.name}</div><div className="font-mono" style={{ fontSize: 11, color: C.faint }}>{m.number}</div></td>
+                    <td style={{ padding: '6px 12px', color: C.subtext }}>{m.plant}</td>
+                    <td style={{ padding: '6px 12px', color: C.subtext }}>{m.group}</td>
+                    <td style={{ padding: '6px 12px', color: C.subtext }}>{m.type}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <div>
+          {conds.length === 0 && <div style={{ fontSize: 12.5, color: C.subtext, marginBottom: 8 }}>Add a condition to include every material that matches it.</div>}
+          {conds.map((c, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <select value={c.op} onChange={e => setConds(conds.map((x, j) => j === i ? Object.assign({}, x, { op: e.target.value }) : x))} style={invInp}>
+                <option value="contains">contains</option><option value="equals">equals</option><option value="starts">starts with</option>
+              </select>
+              <input value={c.value} onChange={e => setConds(conds.map((x, j) => j === i ? Object.assign({}, x, { value: e.target.value }) : x))} placeholder="Value" style={Object.assign({}, invInp, { flex: 1 })} />
+              <button type="button" aria-label="Remove condition" onClick={() => setConds(conds.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><X size={16} /></button>
+            </div>
+          ))}
+          <button type="button" style={invBtnGhost} onClick={() => setConds(conds.concat([{ op: 'contains', value: '' }]))}><Plus size={13} /> Add condition</button>
+        </div>
+      )}
+    </InvModal>
+  );
+}
+
+function invMatSummary(v) {
+  const n = ((v && v.items) || []).length; const c = ((v && v.conditions) || []).length;
+  if (!n && !c) return '';
+  return (n ? n + ' item' + (n > 1 ? 's' : '') : '') + (n && c ? ' + ' : '') + (c ? c + ' condition' + (c > 1 ? 's' : '') : '');
+}
+
+function InvPageFrame({ title, sub, setTab, children, right }) {
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 200 }}><SectionTitle sub={sub}>{title}</SectionTitle></div>
+        {right}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function InvAnalyticsPage({ title, sub, setTab, fields, columns, run, materials, matDocs, exportName }) {
+  const emptyOf = (f) => f.kind === 'material' ? { items: [], conditions: [] } : '';
+  const initial = {};
+  fields.forEach(f => { initial[f.key] = f.def !== undefined ? (typeof f.def === 'function' ? f.def() : f.def) : emptyOf(f); });
+  const [vals, setVals] = useState(initial);
+  const [hidden, setHidden] = useState({});
+  const [adaptOpen, setAdaptOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [vh, setVh] = useState(null);
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState('');
+  const [q, setQ] = useState('');
+  const set = (k, v) => setVals(prev => Object.assign({}, prev, { [k]: v }));
+  const go = () => {
+    const bad = fields.filter(f => f.required && !hidden[f.key] && !String(vals[f.key] === undefined ? '' : vals[f.key]).trim());
+    if (bad.length) { setErr('Fill in the required fields: ' + bad.map(f => f.label).join(', ')); return; }
+    setErr('');
+    const eff = Object.assign({}, vals);
+    fields.forEach(f => { if (hidden[f.key]) eff[f.key] = emptyOf(f); });
+    setRows(run(eff, { materials, matDocs }));
+  };
+  const optionsFor = (f) => {
+    const src = f.opts ? f.opts(materials) : [];
+    return Array.from(new Set(src.filter(Boolean)));
+  };
+  const visibleRows = (rows || []).filter(r => !q.trim() || Object.values(r).join(' ').toLowerCase().includes(q.trim().toLowerCase()));
+  const label = (f) => <label style={{ display: 'block', fontSize: 11.5, color: C.subtext, marginBottom: 3 }}>{f.label}{f.required && <span style={{ color: C.red }}> *</span>}</label>;
+  return (
+    <InvPageFrame title={title} sub={sub} setTab={setTab}>
+      <Card style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: collapsed ? 0 : 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--neel-accent, #0a6ed1)' }}>Standard</div>
+          <button type="button" aria-label={collapsed ? 'Show filters' : 'Hide filters'} onClick={() => setCollapsed(v => !v)} style={{ background: 'none', border: '1px solid ' + C.border, borderRadius: 14, width: 26, height: 22, cursor: 'pointer', color: C.subtext, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <ChevronDown size={14} style={{ transform: collapsed ? 'none' : 'rotate(180deg)' }} />
+          </button>
+        </div>
+        {!collapsed && (
+          <div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 12, alignItems: 'end' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11.5, color: C.subtext, marginBottom: 3 }}>Search</label>
+                <div style={{ position: 'relative' }}>
+                  <Search size={13} style={{ position: 'absolute', left: 8, top: 8, color: C.faint }} />
+                  <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search results" style={Object.assign({}, invInp, { width: '100%', paddingLeft: 26 })} />
+                </div>
+              </div>
+              {fields.filter(f => !hidden[f.key]).map(f => (
+                <div key={f.key}>
+                  {label(f)}
+                  {f.kind === 'material' ? (
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <input readOnly value={invMatSummary(vals[f.key])} placeholder="All materials" onClick={() => setVh(f.key)} style={Object.assign({}, invInp, { flex: 1, cursor: 'pointer' })} />
+                      <button type="button" aria-label="Value help" onClick={() => setVh(f.key)} style={Object.assign({}, invInp, { cursor: 'pointer', padding: '0 8px' })}><Search size={13} /></button>
+                      {invMatSummary(vals[f.key]) && <button type="button" aria-label="Clear" onClick={() => set(f.key, emptyOf(f))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><X size={14} /></button>}
+                    </div>
+                  ) : f.kind === 'select' ? (
+                    <select value={vals[f.key]} onChange={e => set(f.key, e.target.value)} style={Object.assign({}, invInp, { width: '100%' })}>
+                      {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : (
+                    <div>
+                      <input type={f.kind === 'date' ? 'date' : f.kind === 'number' ? 'number' : 'text'} value={vals[f.key]} onChange={e => set(f.key, e.target.value)}
+                        list={f.opts ? 'inv-dl-' + f.key : undefined} style={Object.assign({}, invInp, { width: '100%' })} />
+                      {f.opts && <datalist id={'inv-dl-' + f.key}>{optionsFor(f).map(o => <option key={o} value={o} />)}</datalist>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            {err && <div role="alert" style={{ marginTop: 10, fontSize: 12.5, color: C.red }}>{err}</div>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 14, marginTop: 12, position: 'relative' }}>
+              <button type="button" style={invBtn} onClick={go} data-testid="inv-go-btn">Go</button>
+              <button type="button" style={invBtnGhost} onClick={() => setAdaptOpen(v => !v)}>Adapt Filters ({fields.filter(f => !hidden[f.key]).length})</button>
+              {adaptOpen && (
+                <div style={{ position: 'absolute', top: 36, right: 0, background: '#fff', border: '1px solid ' + C.border, borderRadius: 8, boxShadow: '0 6px 20px rgba(0,0,0,.18)', padding: 10, zIndex: 30, minWidth: 220 }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: C.subtext, marginBottom: 6 }}>Show filters</div>
+                  {fields.map(f => (
+                    <label key={f.key} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12.5, color: C.ink, padding: '3px 0', opacity: f.required ? 0.6 : 1 }}>
+                      <input type="checkbox" disabled={!!f.required} checked={!hidden[f.key]} onChange={() => setHidden(prev => Object.assign({}, prev, { [f.key]: !prev[f.key] }))} />
+                      {f.label}{f.required ? ' (required)' : ''}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid ' + C.border }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>{title}{rows ? ' (' + visibleRows.length + ')' : ''}</div>
+          {rows && rows.length > 0 && (
+            <ExportButton label="Export" onExport={() => exportToExcel(exportName, { Results: visibleRows.map(r => { const o = {}; columns.forEach(c => { o[c.label] = c.fmt ? c.fmt(r[c.key], r) : r[c.key]; }); return o; }) })} />
+          )}
+        </div>
+        {rows === null ? (
+          <EmptyState title={"Let's get some results"} sub="Start by providing your search or filter criteria." />
+        ) : visibleRows.length === 0 ? (
+          <EmptyState title="No data found" sub="Try changing your filters or the date range." />
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 820 }}>
+              <thead><tr style={{ background: C.panelAlt }}>{columns.map(c => <th key={c.key} style={Object.assign({}, invTh, { textAlign: c.num ? 'right' : 'left' })}>{c.label}</th>)}</tr></thead>
+              <tbody>
+                {visibleRows.map((r, i) => (
+                  <tr key={i} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                    {columns.map(c => <td key={c.key} className={c.mono ? 'font-mono' : undefined} style={{ padding: '8px 12px', textAlign: c.num ? 'right' : 'left', color: C.ink, whiteSpace: 'nowrap' }}>{c.fmt ? c.fmt(r[c.key], r) : r[c.key]}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {vh && <MaterialValueHelp materials={materials} value={vals[vh]} onCancel={() => setVh(null)} onOk={(v) => { set(vh, v); setVh(null); }} />}
+    </InvPageFrame>
+  );
+}
+
+const invCommonFields = [
+  { key: 'material', label: 'Material', kind: 'material' },
+  { key: 'plant', label: 'Plant', kind: 'text', opts: (ms) => ms.map(m => m.plant) },
+  { key: 'sloc', label: 'Storage Location', kind: 'text', opts: (ms) => ms.map(m => m.sloc) },
+  { key: 'group', label: 'Material Group', kind: 'text', opts: (ms) => ms.map(m => m.group) },
+  { key: 'type', label: 'Material Type', kind: 'text', opts: (ms) => ms.map(m => m.type) },
+];
+
+function DeadStockTab({ rawItems, finishedItems, matDocs, setTab }) {
+  const materials = useMemo(() => invMaterials(rawItems, finishedItems), [rawItems, finishedItems]);
+  const fields = [
+    { key: 'start', label: 'Analytics Start Date', kind: 'date', required: true, def: () => invDaysAgo(90) },
+    { key: 'end', label: 'Analytics End Date', kind: 'date', required: true, def: invToday },
+    { key: 'cur', label: 'Display Currency', kind: 'select', required: true, options: INV_CURRENCIES, def: 'INR' },
+  ].concat(invCommonFields);
+  const columns = [
+    { key: 'name', label: 'Material' }, { key: 'plant', label: 'Plant' }, { key: 'sloc', label: 'Storage Location' },
+    { key: 'group', label: 'Material Group' }, { key: 'type', label: 'Material Type' },
+    { key: 'q0', label: 'Stock Quantity (Start Period)', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+    { key: 'v0', label: 'Stock Value (Start Period)', num: true, fmt: (v, r) => invMoney(v, r.cur) },
+    { key: 'q1', label: 'Stock Quantity (End Period)', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+    { key: 'v1', label: 'Stock Value (End Period)', num: true, fmt: (v, r) => invMoney(v, r.cur) },
+    { key: 'last', label: 'Last Movement', fmt: (v) => v || 'Never' },
+  ];
+  const run = (v, ctx) => ctx.materials.filter(m => invBaseFilter(v, m)).map(m => {
+    const used = invSum(ctx.matDocs, m.number, v.start, v.end, (sg, t) => INV_CONSUME.includes(t));
+    const q0 = invStockAt(m, ctx.matDocs, invShiftDay(v.start, -1)); const q1 = invStockAt(m, ctx.matDocs, v.end);
+    if (used > 0 || q1 <= 0) return null;
+    return { name: m.name, plant: m.plant, sloc: m.sloc, group: m.group, type: m.type, unit: m.unit, cur: v.cur, q0, v0: q0 * m.price, q1, v1: q1 * m.price, last: invLastMove(ctx.matDocs, m.number) };
+  }).filter(Boolean);
+  return <InvAnalyticsPage title="Dead Stock Analysis" sub="Stock that had no consumption, issue or scrapping in the chosen period." setTab={setTab} fields={fields} columns={columns} run={run} materials={materials} matDocs={matDocs} exportName="dead-stock-analysis.xlsx" />;
+}
+
+function SlowMovingTab({ rawItems, finishedItems, matDocs, setTab }) {
+  const materials = useMemo(() => invMaterials(rawItems, finishedItems), [rawItems, finishedItems]);
+  const fields = [
+    { key: 'days', label: 'Days with Low Consumption', kind: 'number', required: true, def: '90' },
+    { key: 'ref', label: 'Reference Date', kind: 'date', required: true, def: invToday },
+    { key: 'cur', label: 'Display Currency', kind: 'select', required: true, options: INV_CURRENCIES, def: 'INR' },
+    { key: 'ind', label: 'Slow-Moving Indicator', kind: 'select', options: ['All', 'Non-moving', 'Slow-moving'], def: 'All' },
+    { key: 'pct', label: 'Slow-moving below (% of stock)', kind: 'number', def: '25' },
+  ].concat(invCommonFields);
+  const columns = [
+    { key: 'name', label: 'Material' }, { key: 'plant', label: 'Plant' }, { key: 'sloc', label: 'Storage Location' },
+    { key: 'ind', label: 'Slow-Moving Indicator' }, { key: 'type', label: 'Product Type' }, { key: 'group', label: 'Product Group' },
+    { key: 'qty', label: 'Stock Quantity', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+    { key: 'val', label: 'Stock Value', num: true, fmt: (v, r) => invMoney(v, r.cur) },
+    { key: 'cons', label: 'Consumption in Period', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+  ];
+  const run = (v, ctx) => {
+    const days = Math.max(1, Number(v.days) || 90); const from = invShiftDay(v.ref, -days); const pct = Number(v.pct) || 25;
+    return ctx.materials.filter(m => m.qty > 0 && invBaseFilter(v, m)).map(m => {
+      const cons = invSum(ctx.matDocs, m.number, from, v.ref, (sg, t) => INV_CONSUME.includes(t));
+      const ind = cons === 0 ? 'Non-moving' : (cons < m.qty * pct / 100 ? 'Slow-moving' : '');
+      if (!ind || (v.ind !== 'All' && v.ind !== ind)) return null;
+      return { name: m.name, plant: m.plant, sloc: m.sloc, ind, type: m.type, group: m.group, unit: m.unit, cur: v.cur, qty: m.qty, val: m.qty * m.price, cons };
+    }).filter(Boolean);
+  };
+  return <InvAnalyticsPage title="Slow or Non-Moving Materials" sub="Stock with no or very low consumption over the last N days." setTab={setTab} fields={fields} columns={columns} run={run} materials={materials} matDocs={matDocs} exportName="slow-non-moving-materials.xlsx" />;
+}
+
+function AnalyzeStockTab({ rawItems, finishedItems, matDocs, setTab }) {
+  const materials = useMemo(() => invMaterials(rawItems, finishedItems), [rawItems, finishedItems]);
+  const fields = [
+    { key: 'start', label: 'Start Date', kind: 'date', required: true, def: () => invDaysAgo(30) },
+    { key: 'end', label: 'End Date', kind: 'date', required: true, def: invToday },
+  ].concat(invCommonFields);
+  const columns = [
+    { key: 'name', label: 'Material' }, { key: 'plant', label: 'Plant' }, { key: 'sloc', label: 'Storage Location' },
+    { key: 'open', label: 'Opening Stock', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+    { key: 'rec', label: 'Receipts', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+    { key: 'iss', label: 'Issues', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+    { key: 'close', label: 'Closing Stock', num: true, fmt: (v, r) => invNum(v) + ' ' + r.unit },
+  ];
+  const run = (v, ctx) => ctx.materials.filter(m => invBaseFilter(v, m)).map(m => ({
+    name: m.name, plant: m.plant, sloc: m.sloc, unit: m.unit,
+    open: invStockAt(m, ctx.matDocs, invShiftDay(v.start, -1)),
+    rec: invSum(ctx.matDocs, m.number, v.start, v.end, (sg) => sg > 0),
+    iss: invSum(ctx.matDocs, m.number, v.start, v.end, (sg) => sg < 0),
+    close: invStockAt(m, ctx.matDocs, v.end),
+  }));
+  return <InvAnalyticsPage title="Analyze Stock in Date Range" sub="Opening stock, receipts, issues and closing stock for each material." setTab={setTab} fields={fields} columns={columns} run={run} materials={materials} matDocs={matDocs} exportName="stock-in-date-range.xlsx" />;
+}
+
+function StockSingleMaterialTab({ rawItems, finishedItems, matDocs, setTab }) {
+  const materials = useMemo(() => invMaterials(rawItems, finishedItems), [rawItems, finishedItems]);
+  const [text, setText] = useState('');
+  const [number, setNumber] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [vhOpen, setVhOpen] = useState(false);
+  const inputRef = useRef(null);
+  const submit = (t) => {
+    const s2 = String(t === undefined ? text : t).trim().toLowerCase();
+    if (!s2) { setMsg('Enter a material'); return; }
+    const exact = materials.find(m => m.number.toLowerCase() === s2 || String(m.name).toLowerCase() === s2);
+    if (exact) { setNumber(exact.number); setMsg(''); return; }
+    const hits = materials.filter(m => (m.number + ' ' + m.name).toLowerCase().includes(s2));
+    if (hits.length === 1) { setNumber(hits[0].number); setText(hits[0].number); setMsg(''); }
+    else if (hits.length > 1) { setVhOpen(true); setMsg(''); }
+    else { setNumber(null); setMsg('Material "' + t + '" was not found.'); }
+  };
+  const rowsFor = number ? materials.filter(m => m.number === number) : [];
+  const total = rowsFor.reduce((t, m) => t + m.qty, 0);
+  const first = rowsFor[0];
+  const docs = number ? (matDocs || []).filter(d => d.materialNumber === number).sort((a, b) => String(b.postingDate).localeCompare(String(a.postingDate))).slice(0, 15) : [];
+  return (
+    <InvPageFrame title="Stock - Single Material" sub="Enter or scan a material to see its stock and latest movements." setTab={setTab}>
+      <Card style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12.5, color: C.subtext }}>Material:</label>
+          <input ref={inputRef} list="inv-single-dl" autoFocus value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+            placeholder="Material number or name" style={Object.assign({}, invInp, { flex: '1 1 260px', maxWidth: 520 })} />
+          <datalist id="inv-single-dl">{materials.map(m => <option key={m.key} value={m.number}>{m.name}</option>)}</datalist>
+          <button type="button" style={Object.assign({}, invBtn, { background: '#fff', color: 'var(--neel-accent, #0a6ed1)', border: '1px solid var(--neel-accent, #0a6ed1)' })} onClick={() => setVhOpen(true)}>Select</button>
+          <button type="button" style={invBtn} onClick={() => { if (text.trim()) submit(); else { setMsg('Ready to scan - point your barcode scanner at the label.'); if (inputRef.current) inputRef.current.focus(); } }}>Scan</button>
+        </div>
+        {msg && <div style={{ marginTop: 8, fontSize: 12.5, color: C.subtext }}>{msg}</div>}
+      </Card>
+      {!first ? (
+        <Card><EmptyState title="Stock - Single Material" sub="Enter a material" /></Card>
+      ) : (
+        <div>
+          <Card style={{ padding: 16, marginBottom: 14 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.ink }}>{first.name}</div>
+            <div className="font-mono" style={{ fontSize: 12, color: C.faint, marginBottom: 12 }}>{first.number}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+              {[['Unrestricted-use stock', invNum(total) + ' ' + first.unit], ['Plant', first.plant], ['Storage location', Array.from(new Set(rowsFor.map(r => r.sloc))).join(', ')], ['Material group', first.group], ['Material type', first.type], ['Stock value', invMoney(rowsFor.reduce((t, m) => t + m.qty * m.price, 0), 'INR')]].map(kv => (
+                <div key={kv[0]} style={{ border: '1px solid ' + C.borderSoft, borderRadius: 8, padding: '10px 12px' }}>
+                  <div style={{ fontSize: 11, color: C.subtext, textTransform: 'uppercase', fontWeight: 700 }}>{kv[0]}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.ink, marginTop: 2 }}>{kv[1]}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+          <Card style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '10px 14px', borderBottom: '1px solid ' + C.border, fontSize: 14, fontWeight: 700, color: C.ink }}>Latest movements</div>
+            {docs.length === 0 ? <EmptyState title="No movements yet" sub="Material documents for this material will appear here." /> : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 640 }}>
+                  <thead><tr style={{ background: C.panelAlt }}>{['Material doc', 'Posting date', 'Mvt', 'Movement text', 'Quantity', 'Posted by'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+                  <tbody>{docs.map(d => {
+                    const sg = invSign(d);
+                    return (
+                      <tr key={d.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                        <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 600, color: C.copper }}>{d.docNumber}</td>
+                        <td style={{ padding: '8px 12px', color: C.subtext }}>{formatDateTime(d.postingDate)}</td>
+                        <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700 }}>{d.movementType}</td>
+                        <td style={{ padding: '8px 12px', color: C.subtext }}>{(MOVEMENT_TYPES[d.movementType] || {}).text || '\u2014'}</td>
+                        <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: sg > 0 ? C.green : sg < 0 ? C.red : C.ink }}>{sg > 0 ? '+' : sg < 0 ? '\u2212' : ''}{invNum(d.quantity)} {d.unit}</td>
+                        <td style={{ padding: '8px 12px', color: C.subtext }}>{d.postedBy}</td>
+                      </tr>
+                    );
+                  })}</tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+      {vhOpen && <MaterialValueHelp single materials={materials} value={{ items: number ? [number] : [], conditions: [] }} onCancel={() => setVhOpen(false)}
+        onOk={(v) => { setVhOpen(false); if (v.items[0]) { setNumber(v.items[0]); setText(v.items[0]); setMsg(''); } }} />}
+    </InvPageFrame>
+  );
+}
+
+const MIGO_ACTIONS = ['Goods Receipt', 'Cancellation', 'Change', 'Display', 'Goods Issue', 'Place in Storage', 'Release GR Blocked Stock', 'Remove from Storage', 'Return Delivery', 'Subsequent Adjustment', 'Subsequent Delivery', 'Transfer Posting'];
+const MIGO_REFS = ['Inbound Delivery', 'Material Document', 'Order', 'Other', 'Outbound Delivery', 'Purchase Order', 'Reservation', 'Summarized JIT Call (Kanban)', 'Transport', 'Transport ID Code'];
+function migoLine(n) { return { id: uid(), line: n, matKey: '', qty: '', sloc: INV_SLOC_RAW, batch: '', valType: '' }; }
+
+function GoodsReceiptPoTab({ rawItems, matDocs, onAdjustRaw, user, setTab }) {
+  const materials = useMemo(() => invMaterials(rawItems, []), [rawItems]);
+  const [action, setAction] = useState('Goods Receipt');
+  const [ref, setRef] = useState('Purchase Order');
+  const [refNo, setRefNo] = useState('');
+  const [plant, setPlant] = useState(PLANT_CODE);
+  const [docDate, setDocDate] = useState(invToday());
+  const [postDate, setPostDate] = useState(invToday());
+  const [delNote, setDelNote] = useState('');
+  const [bol, setBol] = useState('');
+  const [slip, setSlip] = useState('');
+  const [headerText, setHeaderText] = useState('');
+  const [vendor, setVendor] = useState('');
+  const [topTab, setTopTab] = useState('General');
+  const [botTab, setBotTab] = useState('Material');
+  const [lines, setLines] = useState([migoLine(1)]);
+  const [sel, setSel] = useState(0);
+  const [held, setHeld] = useState([]);
+  const [msg, setMsg] = useState(null);
+  const [lookup, setLookup] = useState('');
+  const canPost = !!user && canDo(user.role, 'inventory.adjust');
+  const setLine = (i, patch) => setLines(prev => prev.map((l, j) => j === i ? Object.assign({}, l, patch) : l));
+  const matOf = (l) => materials.find(m => m.key === l.matKey) || null;
+  const recent = (matDocs || []).slice(0, 5);
+  const reset = () => { setLines([migoLine(1)]); setSel(0); setRefNo(''); setDelNote(''); setBol(''); setSlip(''); setHeaderText(''); setVendor(''); };
+  const post = () => {
+    if (!canPost) { setMsg({ ok: false, text: 'Your role is not allowed to post goods movements.' }); return; }
+    if (ref === 'Purchase Order' && !refNo.trim()) { setMsg({ ok: false, text: 'Enter the purchase order number.' }); return; }
+    const filled = lines.filter(l => l.matKey || l.qty);
+    if (!filled.length) { setMsg({ ok: false, text: 'Add at least one item.' }); return; }
+    const bad = filled.find(l => !matOf(l) || !(Number(l.qty) > 0));
+    if (bad) { setMsg({ ok: false, text: 'Item ' + bad.line + ': choose a material and enter a quantity above zero.' }); return; }
+    const refDoc = ref === 'Purchase Order' ? 'PO ' + refNo.trim() : (refNo.trim() || null);
+    filled.forEach(l => onAdjustRaw(matOf(l).key.slice(1), Number(l.qty), { movementType: '501', refDoc }));
+    setMsg({ ok: true, text: filled.length + ' item(s) posted. Material documents were created and the stock was updated.' });
+    reset();
+  };
+  const hold = () => {
+    if (!lines.some(l => l.matKey || l.qty)) { setMsg({ ok: false, text: 'Nothing to hold.' }); return; }
+    setHeld(prev => prev.concat([{ id: uid(), label: (refNo.trim() ? ref + ' ' + refNo.trim() : 'Held data') + ' (' + lines.length + ')', lines, ref, refNo }]));
+    reset(); setMsg({ ok: true, text: 'Document held.' });
+  };
+  const restore = (h) => { setLines(h.lines); setRef(h.ref); setRefNo(h.refNo); setHeld(prev => prev.filter(x => x.id !== h.id)); setSel(0); };
+  const lookupDocs = lookup.trim() ? (matDocs || []).filter(d => String(d.docNumber) === lookup.trim()) : [];
+  const small = { fontSize: 11.5, color: C.subtext };
+  const treeGroup = (title, children) => (
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, padding: '3px 0' }}>{title}</div>
+      <div style={{ paddingLeft: 12 }}>{children}</div>
+    </div>
+  );
+  const blank = <div style={Object.assign({}, small, { fontStyle: 'italic' })}>Blank</div>;
+  const topTabBtn = (k) => <button key={k} type="button" onClick={() => setTopTab(k)} style={{ background: 'none', border: 'none', borderBottom: topTab === k ? '2px solid var(--neel-accent, #0a6ed1)' : '2px solid transparent', color: topTab === k ? 'var(--neel-accent, #0a6ed1)' : C.ink, fontWeight: 700, fontSize: 12.5, padding: '6px 4px', cursor: 'pointer', marginRight: 16 }}>{k}</button>;
+  const fld = (label, val, set, type) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+      <label style={{ width: 110, textAlign: 'right', fontSize: 12, color: C.subtext }}>{label}:</label>
+      <input type={type || 'text'} value={val} onChange={e => set(e.target.value)} style={Object.assign({}, invInp, { width: 170 })} />
+    </div>
+  );
+  const selLine = lines[sel] || lines[0]; const selMat = selLine ? matOf(selLine) : null;
+  return (
+    <InvPageFrame title="Goods Receipt Purchase Order" sub="Post stock receipts. Every posting creates a material document." setTab={setTab}
+      right={<div style={{ display: 'flex', gap: 8 }}>
+        {action === 'Goods Receipt' && <button type="button" style={Object.assign({}, invBtn, { opacity: canPost ? 1 : 0.5 })} onClick={post} data-testid="migo-post">Post</button>}
+        {action === 'Goods Receipt' && <button type="button" style={Object.assign({}, invBtn, { background: '#fff', color: 'var(--neel-accent, #0a6ed1)', border: '1px solid var(--neel-accent, #0a6ed1)' })} onClick={hold}>Hold</button>}
+        <button type="button" style={invBtnGhost} onClick={() => setTab('invhub')}>Exit</button>
+      </div>}>
+      <Card style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select value={action} onChange={e => { setAction(e.target.value); setMsg(null); }} style={Object.assign({}, invInp, { fontWeight: 700 })}>{MIGO_ACTIONS.map(a => <option key={a}>{a}</option>)}</select>
+          <select value={ref} onChange={e => setRef(e.target.value)} style={Object.assign({}, invInp, { fontWeight: 700 })}>{MIGO_REFS.map(a => <option key={a}>{a}</option>)}</select>
+          <input value={refNo} onChange={e => setRefNo(e.target.value)} placeholder={ref + ' no.'} style={Object.assign({}, invInp, { width: 150 })} />
+          <label style={small}>Plant:</label>
+          <input value={plant} onChange={e => setPlant(e.target.value)} style={Object.assign({}, invInp, { width: 100 })} />
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginLeft: 'auto' }}>GR goods receipt <span className="font-mono" style={Object.assign({}, invInp, { display: 'inline-block', marginLeft: 6 })}>501</span></span>
+        </div>
+      </Card>
+      {msg && <div role="status" style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 6, fontSize: 12.5, background: msg.ok ? '#e8f5e9' : '#fdecea', color: msg.ok ? C.green : C.red }}>{msg.text}</div>}
+
+      {action === 'Display' ? (
+        <Card style={{ padding: 14 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+            <label style={small}>Material document:</label>
+            <input value={lookup} onChange={e => setLookup(e.target.value)} placeholder="Document number" style={Object.assign({}, invInp, { width: 200 })} />
+          </div>
+          {!lookup.trim() ? <div style={small}>Enter a material document number to display it.</div> : lookupDocs.length === 0 ? <div style={small}>No document found with this number.</div> : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead><tr style={{ background: C.panelAlt }}>{['Material doc', 'Posting date', 'Mvt', 'Material', 'Quantity', 'SLoc', 'Reference'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+              <tbody>{lookupDocs.map(d => <tr key={d.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{d.docNumber}</td><td style={{ padding: '8px 12px' }}>{formatDateTime(d.postingDate)}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{d.movementType}</td><td style={{ padding: '8px 12px' }}>{d.materialName}</td>
+                <td className="font-mono" style={{ padding: '8px 12px' }}>{invNum(d.quantity)} {d.unit}</td><td style={{ padding: '8px 12px' }}>{d.storageLocation}</td><td style={{ padding: '8px 12px' }}>{d.refDoc || '\u2014'}</td>
+              </tr>)}</tbody>
+            </table>
+          )}
+        </Card>
+      ) : action !== 'Goods Receipt' ? (
+        <Card><EmptyState title={action + ' is not available yet'} sub="Use Goods Receipt to post a receipt, or Display to look up a material document." /></Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px, 210px) 1fr', gap: 12, alignItems: 'start' }}>
+          <Card style={{ padding: 10 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: C.ink, marginBottom: 6 }}>My Documents</div>
+            {treeGroup('Purchase Orders', blank)}
+            {treeGroup('Orders', blank)}
+            {treeGroup('SumJIC (Kanban)', blank)}
+            {treeGroup('Reservations', blank)}
+            {treeGroup('Material Documents', recent.length ? recent.map(d => <div key={d.id} className="font-mono" style={small}>{d.docNumber}</div>) : blank)}
+            {treeGroup('Held Data', held.length ? held.map(h => <button key={h.id} type="button" onClick={() => restore(h)} style={Object.assign({}, invBtnGhost, { display: 'block', padding: '2px 0', textAlign: 'left' })}>{h.label}</button>) : blank)}
+          </Card>
+          <div>
+            <Card style={{ padding: 12, marginBottom: 12 }}>
+              <div style={{ borderBottom: '1px solid ' + C.border, marginBottom: 10 }}>{['General', 'Vendor'].map(topTabBtn)}</div>
+              {topTab === 'General' ? (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0 30px' }}>
+                  <div>{fld('Document Date', docDate, setDocDate, 'date')}{fld('Posting Date', postDate, setPostDate, 'date')}</div>
+                  <div>{fld('Delivery Note', delNote, setDelNote)}{fld('Bill of Lading', bol, setBol)}{fld('GR/GI Slip No.', slip, setSlip)}</div>
+                  <div>{fld('Header Text', headerText, setHeaderText)}</div>
+                </div>
+              ) : (
+                <div>{fld('Vendor', vendor, setVendor)}<div style={small}>The vendor is kept with this posting for your reference.</div></div>
+              )}
+            </Card>
+            <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 12 }}>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 760 }}>
+                  <thead><tr style={{ background: C.panelAlt }}>{['Line', 'Mat. Short Text', 'Qty in UnE', 'EUn', 'SLoc', 'Batch', 'Valuation Type', 'Stock Type'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+                  <tbody>
+                    {lines.map((l, i) => {
+                      const m = matOf(l);
+                      return (
+                        <tr key={l.id} onClick={() => setSel(i)} style={{ borderTop: '1px solid ' + C.borderSoft, background: sel === i ? 'var(--neel-accent-soft, #eaf3fc)' : 'transparent' }}>
+                          <td style={{ padding: '5px 10px', color: C.subtext }}>{l.line}</td>
+                          <td style={{ padding: '5px 6px' }}><select value={l.matKey} onChange={e => { const mm = materials.find(x => x.key === e.target.value); setLine(i, { matKey: e.target.value, sloc: mm ? mm.sloc : INV_SLOC_RAW }); }} style={Object.assign({}, invInp, { width: 220 })}><option value="">Select material</option>{materials.map(x => <option key={x.key} value={x.key}>{x.name}</option>)}</select></td>
+                          <td style={{ padding: '5px 6px' }}><input type="number" min="0" value={l.qty} onChange={e => setLine(i, { qty: e.target.value })} style={Object.assign({}, invInp, { width: 100 })} /></td>
+                          <td style={{ padding: '5px 10px', color: C.subtext }}>{m ? m.unit : ''}</td>
+                          <td style={{ padding: '5px 6px' }}><input value={l.sloc} onChange={e => setLine(i, { sloc: e.target.value })} style={Object.assign({}, invInp, { width: 70 })} /></td>
+                          <td style={{ padding: '5px 6px' }}><input value={l.batch} onChange={e => setLine(i, { batch: e.target.value })} style={Object.assign({}, invInp, { width: 90 })} /></td>
+                          <td style={{ padding: '5px 6px' }}><input value={l.valType} onChange={e => setLine(i, { valType: e.target.value })} style={Object.assign({}, invInp, { width: 90 })} /></td>
+                          <td style={{ padding: '5px 10px', color: C.subtext }}>Unrestricted</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ display: 'flex', gap: 14, padding: '8px 12px', borderTop: '1px solid ' + C.border }}>
+                <button type="button" style={invBtnGhost} onClick={() => { setLines(prev => prev.concat([migoLine(prev.length + 1)])); setSel(lines.length); }}><Plus size={13} /> Add item</button>
+                <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red })} onClick={() => { if (lines.length > 1) { setLines(prev => prev.filter((_, j) => j !== sel).map((l, j) => Object.assign({}, l, { line: j + 1 }))); setSel(0); } else setLines([migoLine(1)]); }}><Trash2 size={13} /> Delete</button>
+              </div>
+            </Card>
+            <Card style={{ padding: 12 }}>
+              <div style={{ borderBottom: '1px solid ' + C.border, marginBottom: 10 }}>{['Material', 'Quantity', 'Where'].map(k => <button key={k} type="button" onClick={() => setBotTab(k)} style={{ background: 'none', border: 'none', borderBottom: botTab === k ? '2px solid var(--neel-accent, #0a6ed1)' : '2px solid transparent', color: botTab === k ? 'var(--neel-accent, #0a6ed1)' : C.ink, fontWeight: 700, fontSize: 12.5, padding: '6px 4px', cursor: 'pointer', marginRight: 16 }}>{k}</button>)}</div>
+              {!selMat ? <div style={small}>Select an item to see its details.</div> : botTab === 'Material' ? (
+                <div style={{ fontSize: 12.5, color: C.ink }}><div style={{ fontWeight: 700 }}>{selMat.name}</div><div className="font-mono" style={small}>{selMat.number}</div><div style={small}>{selMat.group} / {selMat.type}</div></div>
+              ) : botTab === 'Quantity' ? (
+                <div style={{ fontSize: 12.5, color: C.ink }}>Receiving <b>{invNum(selLine.qty)} {selMat.unit}</b>. Current stock: <b>{invNum(selMat.qty)} {selMat.unit}</b>. After posting: <b>{invNum(selMat.qty + (Number(selLine.qty) || 0))} {selMat.unit}</b>.</div>
+              ) : (
+                <div style={{ fontSize: 12.5, color: C.ink }}>Plant <b>{plant}</b>, storage location <b>{selLine.sloc || INV_SLOC_RAW}</b>{selLine.batch ? <span>, batch <b>{selLine.batch}</b></span> : null}.</div>
+              )}
+            </Card>
+          </div>
+        </div>
+      )}
+    </InvPageFrame>
+  );
+}
+
+function SpaceHubTab({ hubKey, setTab, user }) {
+  const hub = SPACE_HUBS[hubKey];
+  if (!hub) return null;
+  const sections = hub.sections.map(sec => ({
+    title: sec.title,
+    tiles: sec.tiles.filter(t => canSeeTab(user, t.tab)),
+    links: (sec.links || []).filter(t => canSeeTab(user, t.tab)),
+  })).filter(sec => sec.tiles.length || sec.links.length);
+  if (!sections.length) {
+    return <Card><EmptyState title="Nothing to show here yet" sub="Ask your administrator for access to the apps in this area." /></Card>;
+  }
+  const navOf = (tab) => NAV.find(n => n.key === tab);
+  return (
+    <div>
+      {sections.map(sec => (
+        <div key={sec.title} style={{ marginBottom: 26 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.ink, marginBottom: 10 }}>{sec.title}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+            {sec.tiles.map(t => {
+              const nav = navOf(t.tab); const Icon = (nav && nav.icon) || LayoutGrid;
+              return (
+                <button key={t.tab + (t.sub || '')} type="button" onClick={() => setTab(t.tab)} className="hover-lift" data-testid={'tile-' + t.tab}
+                  style={{ width: 168, height: 128, textAlign: 'left', padding: 12, borderRadius: 10, border: '1px solid ' + C.border, background: '#fff', cursor: 'pointer', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{t.title || (nav && nav.label) || t.tab}</div>
+                    {t.sub && <div style={{ fontSize: 12, color: C.subtext }}>{t.sub}</div>}
+                  </div>
+                  <Icon size={22} color={'var(--neel-accent, #0a6ed1)'} />
+                </button>
+              );
+            })}
+          </div>
+          {sec.links.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+              {sec.links.map(t => {
+                const nav = navOf(t.tab);
+                return (
+                  <button key={t.tab} type="button" onClick={() => setTab(t.tab)} data-testid={'tile-' + t.tab}
+                    style={{ padding: '6px 14px', borderRadius: 16, border: '1px solid ' + C.border, background: '#fff', cursor: 'pointer', fontSize: 12.5, color: C.ink }}>
+                    <b>{t.title || (nav && nav.label) || t.tab}</b>{t.sub ? ' ' + t.sub : ''}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SpaceBackBar({ tab, setTab }) {
+  let hub = null;
+  Object.keys(SPACE_HUB_TABS).forEach(h => { if (!hub && SPACE_HUB_TABS[h].includes(tab)) hub = h; });
+  if (!hub) return null;
+  return (
+    <div className="no-print" style={{ marginBottom: 10 }}>
+      <button type="button" data-testid="space-back" onClick={() => setTab(hub)}
+        style={{ background: 'none', border: 'none', color: 'var(--neel-accent, #0a6ed1)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 2, padding: 0 }}>
+        <ChevronLeft size={15} /> {SPACE_HUBS[hub].label}
+      </button>
+    </div>
+  );
+}
+
 function MaterialDocsTab({ matDocs, rawItems, finishedItems }) {
   const [mvtFilter, setMvtFilter] = useState('All');
   const [query, setQuery] = useState('');
@@ -15055,6 +16172,84 @@ function MaterialDocsTab({ matDocs, rawItems, finishedItems }) {
   );
 }
 
+/* NEEL_HUBS_V1 - tile pages for each space. Add a page here to give it a tile. */
+const SPACE_HUBS = {
+  hub_qm: { label: 'Neel : QM Apps', sections: [
+    { title: 'Quality Management', tiles: [
+      { tab: 'quality', title: 'Quality Release', sub: 'Inspection Usage Decision' },
+      { tab: 'qchold', title: 'QC Hold Section', sub: 'Held LWC Baskets' },
+      { tab: 'qmlots', title: 'Process Inspection Lots', sub: 'Worklist' },
+      { tab: 'lab', title: 'Lab & Mechanical', sub: 'Spectro & Tensile Tests' },
+      { tab: 'spc', title: 'SPC', sub: 'Statistical Process Control' },
+      { tab: 'capa', title: 'CAPA', sub: 'Corrective & Preventive Actions' },
+    ] },
+  ] },
+  hub_sd: { label: 'Neel : SD Apps', sections: [
+    { title: 'Sales & Distribution', tiles: [
+      { tab: 'orders', title: 'Orders', sub: 'Sales Orders & Status' },
+    ] },
+  ] },
+  hub_ship: { label: 'Shipping', sections: [
+    { title: 'Shipping', tiles: [
+      { tab: 'dispatch', title: 'Dispatch', sub: 'Deliveries & Released Stock' },
+    ] },
+  ] },
+  invhub: { label: 'Inventory Management', sections: [
+    { title: 'Stock Management', tiles: [
+      { tab: 'migo', title: 'Post Goods Movement', sub: 'Goods Receipt' },
+      { tab: 'matdocs', title: 'Material Documents Overview' },
+      { tab: 'cyclecount', title: 'Cycle Count', sub: 'Physical Inventory Audit' },
+    ] },
+    { title: 'Stock Monitoring', tiles: [
+      { tab: 'stocksingle', title: 'Stock', sub: 'Single Material' },
+      { tab: 'inventory', title: 'Stock', sub: 'Multiple Materials' },
+      { tab: 'analyzestock', title: 'Analyze Stock in Date Range' },
+      { tab: 'slowmoving', title: 'Slow or Non-Moving Materials' },
+    ], links: [
+      { tab: 'deadstock', title: 'Dead Stock Analysis' },
+    ] },
+    { title: 'Material Planning', tiles: [
+      { tab: 'bomMrp', title: 'BOM / MRP', sub: 'Bill of Materials & Requirements' },
+    ] },
+  ] },
+  hub_prod: { label: 'Production & Shop Floor', sections: [
+    { title: 'Planning', tiles: [
+      { tab: 'plan', title: 'Production Plan (DPP)', sub: 'Daily Process Plan' },
+      { tab: 'schedule', title: 'Schedule', sub: 'Order Schedule' },
+    ] },
+    { title: 'Execution', tiles: [
+      { tab: 'stages', title: 'Stage Tracking', sub: 'Production Orders' },
+      { tab: 'floor', title: 'Shop Floor Workbench', sub: 'Pull Operations' },
+    ] },
+    { title: 'Reporting', tiles: [
+      { tab: 'dpr', title: 'Daily Report', sub: 'Daily Production Report' },
+    ] },
+  ] },
+  hub_maint: { label: 'Maintenance & Tooling', sections: [
+    { title: 'Maintenance & Tooling', tiles: [
+      { tab: 'maintenance', title: 'Maintenance', sub: 'Breakdowns & Preventive Tasks' },
+      { tab: 'tooling', title: 'Tooling & Dies', sub: 'Die Usage & Polishing' },
+      { tab: 'energy', title: 'Machine Energy', sub: 'Energy Tracking' },
+    ] },
+  ] },
+  hub_admin: { label: 'Administration', sections: [
+    { title: 'Organization', tiles: [
+      { tab: 'master', title: 'Master', sub: 'Master Data & Settings' },
+      { tab: 'team', title: 'Team & Roles', sub: 'Users & Access' },
+      { tab: 'skills', title: 'Skill Matrix', sub: 'Training & Skills' },
+    ] },
+    { title: 'Business', tiles: [
+      { tab: 'cost', title: 'Cost of Production' },
+      { tab: 'trends', title: 'Trends' },
+      { tab: 'reports', title: 'Reports & Downloads' },
+    ] },
+    { title: 'Governance & Improvement', tiles: [
+      { tab: 'audit', title: 'Audit Trail' },
+      { tab: 'kaizen', title: 'Kaizen', sub: 'Improvement Ideas' },
+    ] },
+  ] },
+};
+const SPACE_HUB_TABS = Object.fromEntries(Object.entries(SPACE_HUBS).map(([k, h]) => [k, h.sections.flatMap(sec => sec.tiles.concat(sec.links || []).map(t => t.tab))]));
 const NAV_GROUPS = [
   {
     label: 'Overview',
@@ -15102,6 +16297,11 @@ const NAV_GROUPS = [
       { key: 'inventory', label: 'Inventory', icon: Boxes },
       { key: 'cyclecount', label: 'Cycle Count', icon: ScanLine, roles: ['Admin', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Owner'] },
       { key: 'matdocs', label: 'Material Documents', icon: FileSpreadsheet },
+      { key: 'migo', label: 'Goods Receipt Purchase Order', icon: Package, hidden: true },
+      { key: 'stocksingle', label: 'Stock - Single Material', icon: Activity, hidden: true },
+      { key: 'deadstock', label: 'Dead Stock Analysis', icon: Layers, hidden: true },
+      { key: 'slowmoving', label: 'Slow or Non-Moving Materials', icon: Layers, hidden: true },
+      { key: 'analyzestock', label: 'Analyze Stock in Date Range', icon: TrendingUp, hidden: true },
     ],
   },
   {
@@ -15121,7 +16321,7 @@ const NAV_GROUPS = [
     ],
   },
 ];
-const NAV = NAV_GROUPS.flatMap(g => g.items);
+const NAV = NAV_GROUPS.flatMap(g => g.items).concat(Object.entries(SPACE_HUBS).map(([key, h]) => ({ key, label: h.label, icon: LayoutGrid, hidden: true })));
 
 /* =========================================================================
    ACCESS (Master > Access): every tab and every key action is a FEATURE; the Admin ticks which roles get which.
@@ -15164,7 +16364,7 @@ const ACTION_FEATURES = [
 ];
 const CUSTOMER_TABS = ['orders', 'dispatch'];   // what the Customer role gets by default: its own orders and deliveries, read only
 const FEATURES = [
-  ...NAV.map(n => ({ key: `tab.${n.key}`, group: 'Tabs', kind: 'tab', label: n.label, tab: n.key, adminOnly: n.key === 'master', rule: n.roles ? (r => n.roles.includes(r)) : () => true, customer: CUSTOMER_TABS.includes(n.key) })),
+  ...NAV.filter(n => !SPACE_HUBS[n.key]).map(n => ({ key: `tab.${n.key}`, group: 'Tabs', kind: 'tab', label: n.label, tab: n.key, adminOnly: n.key === 'master', rule: n.roles ? (r => n.roles.includes(r)) : () => true, customer: CUSTOMER_TABS.includes(n.key) })),
   ...ACTION_FEATURES.map(f => ({ ...f, kind: 'action' })),
 ];
 const FEATURE_BY_KEY = Object.fromEntries(FEATURES.map(f => [f.key, f]));
@@ -15180,7 +16380,11 @@ function canDo(role, key) {
   if (typeof o === 'boolean') return o;
   return featureDefault(role, f);
 }
-function canSeeTab(user, key) { return !!user && canDo(user.role, `tab.${key}`); }
+function canSeeTab(user, key) {
+  if (!user) return false;
+  if (SPACE_HUB_TABS[key]) return SPACE_HUB_TABS[key].some(k => canSeeTab(user, k));
+  return canDo(user.role, `tab.${key}`);
+}
 function visibleTabs(user) { return NAV.filter(n => canSeeTab(user, n.key)); }
 function firstVisibleTab(user) { const v = visibleTabs(user); return (v.find(n => n.key === 'launchpad') || v[0] || { key: 'launchpad' }).key; }
 // the differences from the default, ready to store: only features whose value differs from the default are kept
@@ -15605,7 +16809,7 @@ function Shell({
   isOnline, pendingSyncCount, orders, settings, onUpdateSettings, onAddOrder, onAddMaintenance,
   pullRequests, children,
 }) {
-  const navGroups = NAV_GROUPS.map(g => ({ ...g, items: g.items.filter(n => canSeeTab(user, n.key)) })).filter(g => g.items.length);
+  const navGroups = NAV_GROUPS.map(g => ({ ...g, items: g.items.filter(n => !n.hidden && canSeeTab(user, n.key)) })).filter(g => g.items.length);
   const navItems = navGroups.flatMap(g => g.items);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [leftMenuOpen, setLeftMenuOpen] = useState(false);
@@ -15634,13 +16838,13 @@ function Shell({
 
   const SPACES = [
     { key: 'launchpad', label: 'My Home', match: ['launchpad'] },
-    { key: 'quality', label: 'Neel : QM Apps', match: ['quality', 'qchold', 'qmlots', 'lab', 'spc', 'capa'] },
-    { key: 'orders', label: 'Neel : SD Apps', match: ['orders'] },
-    { key: 'dispatch', label: 'Shipping', match: ['dispatch'] },
-    { key: 'inventory', label: 'Inventory Management', match: ['inventory', 'cyclecount', 'matdocs', 'bomMrp'] },
-    { key: 'plan', label: 'Production & Shop Floor', match: ['plan', 'stages', 'floor', 'dpr', 'schedule'] },
-    { key: 'maintenance', label: 'Maintenance & Tooling', match: ['maintenance', 'tooling', 'energy'] },
-    ...(canSeeTab(user, 'master') ? [{ key: 'master', label: 'Administration', match: ['master', 'team', 'cost', 'reports', 'audit', 'trends', 'skills', 'kaizen'] }] : []),
+    { key: 'hub_qm', label: 'Neel : QM Apps', match: ['hub_qm', 'quality', 'qchold', 'qmlots', 'lab', 'spc', 'capa'] },
+    { key: 'hub_sd', label: 'Neel : SD Apps', match: ['hub_sd', 'orders'] },
+    { key: 'hub_ship', label: 'Shipping', match: ['hub_ship', 'dispatch'] },
+    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock'] },
+    { key: 'hub_prod', label: 'Production & Shop Floor', match: ['hub_prod', 'plan', 'stages', 'floor', 'dpr', 'schedule'] },
+    { key: 'hub_maint', label: 'Maintenance & Tooling', match: ['hub_maint', 'maintenance', 'tooling', 'energy'] },
+    ...(canSeeTab(user, 'master') ? [{ key: 'hub_admin', label: 'Administration', match: ['hub_admin', 'master', 'team', 'cost', 'reports', 'audit', 'trends', 'skills', 'kaizen'] }] : []),
   ].filter(s => canSeeTab(user, s.key));
 
   return (
@@ -18187,6 +19391,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           notifications={notifications} onMarkNotificationsRead={markNotificationsRead} isOnline={isOnline} pendingSyncCount={pendingSyncCount}
           orders={scoped ? scoped.orders : orders} settings={settings} onUpdateSettings={updateSettings} onAddOrder={addOrder} onAddMaintenance={addMaintenance} pullRequests={pullRequests}>
           {isCustomer && <CustomerBanner user={user} link={customerLink} />}
+          <SpaceBackBar tab={tab} setTab={setTab} />
           {tab === 'launchpad' && <HomePage setTab={setTab} orders={orders} dailyPlans={dailyPlans} batches={batches} rawItems={rawItems}
             maintenanceLogs={maintenanceLogs} capaRecords={capaRecords} pmTasks={pmTasks} costData={costData} machineProd={machineProd}
             dprEntries={dprEntries} rawConsumption={rawConsumption} user={user} toolingItems={toolingItems} energyLogs={energyLogs}
@@ -18194,6 +19399,12 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
             planMeta={planMeta} spinnerPlans={spinnerPlans} dispatchPlans={dispatchPlans} deliveries={deliveries} heats={heats} settings={settings} onClearAll={clearAllData} />}
           {tab === 'qmlots' && <QMLotsTab batches={batches} />}
           {tab === 'matdocs' && <MaterialDocsTab matDocs={matDocs} rawItems={rawItems} finishedItems={finishedItems} />}
+          {SPACE_HUBS[tab] && <SpaceHubTab hubKey={tab} setTab={setTab} user={user} />}
+          {tab === 'migo' && <GoodsReceiptPoTab rawItems={rawItems} matDocs={matDocs} onAdjustRaw={adjustRaw} user={user} setTab={setTab} />}
+          {tab === 'stocksingle' && <StockSingleMaterialTab rawItems={rawItems} finishedItems={finishedItems} matDocs={matDocs} setTab={setTab} />}
+          {tab === 'deadstock' && <DeadStockTab rawItems={rawItems} finishedItems={finishedItems} matDocs={matDocs} setTab={setTab} />}
+          {tab === 'slowmoving' && <SlowMovingTab rawItems={rawItems} finishedItems={finishedItems} matDocs={matDocs} setTab={setTab} />}
+          {tab === 'analyzestock' && <AnalyzeStockTab rawItems={rawItems} finishedItems={finishedItems} matDocs={matDocs} setTab={setTab} />}
           {tab === 'orders' && <OrdersTab orders={scoped ? scoped.orders : orders} batches={scoped ? [] : batches} deliveries={scoped ? scoped.deliveries : deliveries} dispatchPlans={scoped ? scoped.dispatchPlans : dispatchPlans} onAdd={addOrder} onUpdateStatus={updateOrderStatus} onDelete={deleteOrder}
             onShortClose={shortCloseOrder} onReopen={reopenShortClosed} user={user} settings={settings} onUpdateSettings={updateSettings} setTab={setTab} />}
           {tab === 'schedule' && <ScheduleTab orders={orders} dprEntries={dprEntries} />}
