@@ -24,3 +24,13 @@ dist-ssr
 *.sw?
 
 .vercel
+
+# WhatsApp alert bot (login + secret)
+whatsapp-bot/node_modules
+whatsapp-bot/.wa_session
+whatsapp-bot/.wwebjs_cache
+whatsapp-bot/whatsapp-bot.config.json
+patch-*.cjs
+check-patches.cjs
+*.bak
+whatsapp-bot/

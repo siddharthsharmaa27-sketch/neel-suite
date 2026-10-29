@@ -3161,7 +3161,7 @@ function tlShiftKey(key, n) {
 const tlNum = (v) => Math.round((Number(v) || 0) * 100) / 100;
 const tlRupee = (v) => '\u20B9' + Math.round(Number(v) || 0).toLocaleString('en-IN');
 
-function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishing, onDeleteDie, user }) {
+function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishing, onDeleteDie, user, setTab }) {
   const ctx = useContext(ReportCtx) || {};
   const batches = ctx.batches || [];
   const orders = ctx.orders || [];
@@ -3726,7 +3726,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
         {navBtn('lifecycle', '⚙️ B. Tooling Lifecycle & Re-boring', wearAlerts.length)}
         {navBtn('packaging', '📦 A1. Packaging BOM & Variance Audit')}
         {navBtn('returnables', '🔄 A2. Returnable Bobbins & Pallets')}
-        {navBtn('catalog', '📋 A. Master Catalog (consumables_master)', masterList.filter(m => Number(m.stock_qty) <= Number(m.min_stock_level)).length)}
+        <button type="button" onClick={() => setTab && setTab('stores')} style={{ padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', border: `1px dashed ${C.border}`, background: 'transparent', color: C.copperDark }}>📋 Item catalog now lives in Stores & Master Store →</button>
         {navBtn('transactions', '🧾 C. Store Consumption Logs')}
       </div>
 
@@ -4181,103 +4181,6 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
       {/* =====================================================================
           TAB 4: UNIFIED MASTER CATALOG (consumables_master)
          ===================================================================== */}
-      {subTab === 'catalog' && (
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-            <div style={{ fontSize: 13, color: C.subtext }}>
-              Unified catalog (<code className="font-mono">consumables_master</code>) for plant tooling, graphite dies, lubricants, and packaging materials.
-            </div>
-            <Button icon={Plus} onClick={() => setShowAddCat(v => !v)}>{showAddCat ? 'Close' : 'Add Catalog Item'}</Button>
-          </div>
-
-          {showAddCat && (
-            <Card style={{ marginBottom: 16, background: C.panelAlt }}>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: 12 }}>
-                <TextField label="Item Code (e.g. DIE-15.0-TCT)" value={catForm.code} onChange={e => setCatForm({ ...catForm, code: e.target.value })} placeholder="DIE-15.0-TCT" />
-                <TextField label="Item Description" value={catForm.name} onChange={e => setCatForm({ ...catForm, name: e.target.value })} placeholder="Carbide Die 15mm" />
-                <SelectField label="Category" options={allCategories} value={catForm.category} onChange={e => setCatForm({ ...catForm, category: e.target.value })} />
-                <SelectField label="Applies To (Line / Machine / Packing)" options={allAppliesTo} value={catForm.applies_to} onChange={e => setCatForm({ ...catForm, applies_to: e.target.value })} />
-                <TextField label="Target Life Meters (Tools)" type="number" value={catForm.target_life_meters} onChange={e => setCatForm({ ...catForm, target_life_meters: e.target.value })} placeholder="5000" />
-                <TextField label="Target Life kg (Tools)" type="number" value={catForm.target_life_kg} onChange={e => setCatForm({ ...catForm, target_life_kg: e.target.value })} placeholder="3500" />
-                <TextField label="Std Qty per Output Unit (Packaging)" type="number" step="0.01" value={catForm.standard_qty_per_unit} onChange={e => setCatForm({ ...catForm, standard_qty_per_unit: e.target.value })} placeholder="1 or 0.05" />
-                <TextField label="Unit Cost (₹)" type="number" value={catForm.unit_cost} onChange={e => setCatForm({ ...catForm, unit_cost: e.target.value })} placeholder="1450" />
-                <TextField label="Min Stock Level (Reorder)" type="number" value={catForm.min_stock_level} onChange={e => setCatForm({ ...catForm, min_stock_level: e.target.value })} placeholder="20" />
-                <TextField label="Opening Store Stock" type="number" value={catForm.stock_qty} onChange={e => setCatForm({ ...catForm, stock_qty: e.target.value })} placeholder="50" />
-                <SelectField label="UOM" options={['pcs', 'kg', 'liters', 'rolls', 'sets']} value={catForm.uom} onChange={e => setCatForm({ ...catForm, uom: e.target.value })} />
-              </div>
-
-              {/* Add custom Category or Applies-To Machine/Packing unit on the fly */}
-              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.borderSoft}` }}>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input value={newCatInput} onChange={e => setNewCatInput(e.target.value)} placeholder="Add custom category…" style={{ padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12.5 }} />
-                  <Button variant="secondary" onClick={() => { if (newCatInput.trim()) { setCustomCategories(p => [...p, newCatInput.trim()]); setCatForm(f => ({ ...f, category: newCatInput.trim() })); setNewCatInput(''); } }}>+ Category</Button>
-                </div>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <input value={newAppliesInput} onChange={e => setNewAppliesInput(e.target.value)} placeholder="Add machine / packing unit…" style={{ padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12.5 }} />
-                  <Button variant="secondary" onClick={() => { if (newAppliesInput.trim()) { setCustomApplies(p => [...p, newAppliesInput.trim()]); setCatForm(f => ({ ...f, applies_to: newAppliesInput.trim() })); setNewAppliesInput(''); } }}>+ Applies To</Button>
-                </div>
-                <Button onClick={handleAddMasterCatalogItem}>Save Item to Master Catalog</Button>
-              </div>
-            </Card>
-          )}
-
-          <Card style={{ padding: 0, overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 920 }}>
-                <thead>
-                  <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                    <th style={thStyle}>Code</th>
-                    <th style={thStyle}>Description</th>
-                    <th style={thStyle}>Category</th>
-                    <th style={thStyle}>Applies To</th>
-                    <th style={thStyle}>Target Life (Tools)</th>
-                    <th style={thStyle}>Std BOM Qty (Pack)</th>
-                    <th style={thStyle}>Unit Cost</th>
-                    <th style={thStyle}>Store Stock</th>
-                    <th style={thStyle}>Min Reorder</th>
-                    <th style={thStyle}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {masterList.map(item => {
-                    const low = Number(item.stock_qty) <= Number(item.min_stock_level);
-                    return (
-                      <tr key={item.id} style={{ borderTop: `1px solid ${C.borderSoft}`, background: low ? C.redSoft : 'transparent' }}>
-                        <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 700, color: C.copperDark }}>{item.code}</td>
-                        <td style={{ padding: '10px 14px', fontWeight: 600 }}>{item.name}</td>
-                        <td style={{ padding: '10px 14px' }}><Badge tone={TOOL_CATEGORY_SET.has(item.category) ? 'copper' : 'default'}>{item.category}</Badge></td>
-                        <td style={{ padding: '10px 14px', color: C.subtext }}>{item.applies_to}</td>
-                        <td className="font-mono" style={{ padding: '10px 14px' }}>
-                          {item.target_life_meters ? `${Number(item.target_life_meters).toLocaleString()} m` : '—'}
-                          {item.target_life_kg ? ` / ${Number(item.target_life_kg).toLocaleString()} kg` : ''}
-                        </td>
-                        <td className="font-mono" style={{ padding: '10px 14px' }}>
-                          {item.standard_qty_per_unit ? `${item.standard_qty_per_unit} ${item.uom}/unit` : '—'}
-                        </td>
-                        <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 600 }}>₹{Number(item.unit_cost).toLocaleString('en-IN')}</td>
-                        <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 700, color: low ? C.red : C.green }}>
-                          {item.stock_qty} {item.uom} {low && '⚠️'}
-                        </td>
-                        <td className="font-mono" style={{ padding: '10px 14px', color: C.subtext }}>{item.min_stock_level} {item.uom}</td>
-                        <td style={{ padding: '10px 14px' }}>
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <Button variant="secondary" data-testid={'cat-edit-' + item.code} style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => openEditCat(item)}>Edit</Button>
-                            <Button variant="secondary" data-testid={'cat-delete-' + item.code} style={{ padding: '5px 10px', fontSize: 12, color: C.red }} onClick={() => setDelCat(item)}>Delete</Button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* =====================================================================
-          TAB 5: CONSUMPTION & TRANSACTION LOGS (consumables_transactions)
-         ===================================================================== */}
       {subTab === 'transactions' && (
         <div>
           <Card style={{ marginBottom: 16, background: C.panelAlt }}>
@@ -4429,6 +4332,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
   );
 }
 
+/* NEEL_STOCK_VIEWS_V1 - consumables inventory */
 function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachines = [], onAddEnergyMachine, onRemoveEnergyMachine, user }) {
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [readings, setReadings] = useState({});
@@ -9316,7 +9220,7 @@ function MasterListEditor({ def, list, onSave }) {
   );
 }
 
-const ACCESS_GROUPS = ['Tabs', 'Orders & dispatch', 'Planning & production', 'Inventory', 'Quality', 'Maintenance', 'Cost', 'Visibility'];
+const ACCESS_GROUPS = ['Tabs', 'Orders & dispatch', 'Planning & production', 'Inventory', 'Stores & Procurement', 'Quality', 'Maintenance', 'Cost', 'Visibility'];
 function MasterAccess({ onSave, onReset, onCopy }) {
   const [role, setRole] = useState('Sales');
   const [copyFrom, setCopyFrom] = useState('Production');
@@ -10981,7 +10885,7 @@ function ExecutiveRMOverview({ rawItems, user, setTab }) {
   </div>;
 }
 
-function InventoryTab({ batches, rawItems, finishedItems, onAddRaw, onAdjustRaw, onDeleteRaw, onAddFinished, onAddFinishedBatch, onAdjustFinished, onDeleteFinished, onSetFinishedCategory, onSetRawKind, rawConsumption, user }) {
+function InventoryTab({ section, batches, rawItems, finishedItems, onAddRaw, onAdjustRaw, onDeleteRaw, onAddFinished, onAddFinishedBatch, onAdjustFinished, onDeleteFinished, onSetFinishedCategory, onSetRawKind, rawConsumption, user }) {
   const canViewInventory = canDo(user?.role, 'tab.inventory');
   const canAddInventory = canDo(user?.role, 'inventory.add');
   const canAdjustInventory = canDo(user?.role, 'inventory.adjust');
@@ -11032,15 +10936,34 @@ function InventoryTab({ batches, rawItems, finishedItems, onAddRaw, onAdjustRaw,
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: 12 }}>
-        <SectionTitle sub="Raw material stock and finished tubes ready for dispatch.">Inventory</SectionTitle>
+        <SectionTitle sub={section === 'raw' ? 'Copper cathode, scrap and other raw material. Stock, reorder levels and adjustments.' : section === 'fin' ? 'Finished tubes ready for dispatch, in kg and in pallets or boxes.' : 'Raw material stock and finished tubes ready for dispatch.'}>{section === 'raw' ? 'Raw Material Inventory' : section === 'fin' ? 'Finished Goods Inventory' : 'Inventory'}</SectionTitle>
         <ExportButton label="Export inventory" onExport={() => exportToExcel('neelsuite-inventory.xlsx', {
           'Raw materials': rawItems.map(r => ({ Material: r.name, Kind: rawKindOf(r), 'On hand': r.qty, Unit: r.unit, 'Reorder level': r.reorderLevel })),
           'Finished goods': finishedItems.map(fgView).map(r => ({ Category: r.category, Spec: r.spec, 'In stock (kg)': r.qty, 'Pallets / boxes': r.altQty, 'Count unit': r.altUnit })),
         })} />
       </div>
 
+      {section && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, margin: '14px 0' }}>
+          {(section === 'raw' ? [
+            ['Raw materials', String(rawItems.length), 'items in stock list', C.ink],
+            ['Below reorder level', String(rawItems.filter(r => Number(r.qty) > 0 && Number(r.qty) <= Number(r.reorderLevel)).length), 'order soon', rawItems.some(r => Number(r.qty) > 0 && Number(r.qty) <= Number(r.reorderLevel)) ? C.amber : C.green],
+            ['Out of stock', String(rawItems.filter(r => !(Number(r.qty) > 0)).length), 'nothing on hand', rawItems.some(r => !(Number(r.qty) > 0)) ? C.red : C.green],
+          ] : [
+            ['Finished goods stock', Math.round(finishedItems.reduce((t, f) => t + (Number(f.qty) || 0), 0)).toLocaleString('en-IN') + ' kg', 'all categories', C.ink],
+            ['Sizes in stock', String(finishedItems.filter(f => Number(f.qty) > 0).length), 'of ' + finishedItems.length + ' listed', C.ink],
+            ['Imported goods', Math.round(finishedItems.filter(f => isImportedItem(f)).reduce((t, f) => t + (Number(f.qty) || 0), 0)).toLocaleString('en-IN') + ' kg', 'bought-in tubes', C.ink],
+          ]).map(c => (
+            <Card key={c[0]} style={{ padding: 12 }}>
+              <div style={{ fontSize: 11, color: C.subtext, textTransform: 'uppercase', fontWeight: 700 }}>{c[0]}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: c[3], marginTop: 2 }}>{c[1]}</div>
+              <div style={{ fontSize: 12, color: C.subtext, marginTop: 2 }}>{c[2]}</div>
+            </Card>
+          ))}
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 22 }}>
-        <div>
+        {section !== 'fin' && (<div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <h3 className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>Raw materials</h3>
             {canAddInventory && <Button variant="secondary" icon={Plus} onClick={() => setShowRawForm(v => !v)}>{showRawForm ? 'Close' : 'Add item'}</Button>}
@@ -11094,9 +11017,9 @@ function InventoryTab({ batches, rawItems, finishedItems, onAddRaw, onAdjustRaw,
               </div>
             )}
           </Card>
-        </div>
+        </div>)}
 
-        <div data-testid="fg-section">
+        {section !== 'raw' && (<div data-testid="fg-section">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <div>
               <h3 className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>Finished goods</h3>
@@ -11162,7 +11085,7 @@ function InventoryTab({ batches, rawItems, finishedItems, onAddRaw, onAdjustRaw,
               </div>
             )}
           </Card>
-        </div>
+        </div>)}
       </div>
     </div>
   );
@@ -13516,6 +13439,7 @@ function HorizonMyHome({
     { title: 'QC Hold Section', subtitle: 'Held LWC Baskets', icon: AlertOctagon, tab: 'qchold', cat: 'Favorites', color: '#bb0000' },
     { title: 'Lab & Mechanical', subtitle: 'Spectro & Tensile Tests', icon: Activity, tab: 'lab', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Purchase & Goods Receipt', subtitle: 'Orders & Receiving', icon: FileSpreadsheet, tab: 'conpurchase', cat: 'Favorites', color: '#5c2d91' },
+    { title: 'Stores & Master Store', subtitle: 'Items, Spares & Requisitions', icon: Boxes, tab: 'stores', cat: 'Favorites', color: '#5c2d91' },
     { title: 'Cycle Count', subtitle: 'Physical Inventory Audit', icon: ScanLine, tab: 'cyclecount', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Display Outbound Delivery', subtitle: 'Dispatch & Challans', icon: Package, tab: 'dispatch', cat: 'Favorites', color: '#0a6ed1' },
     { title: 'Sales Orders', subtitle: 'Order Book & Tracking', icon: ClipboardList, tab: 'orders', cat: 'Favorites', color: '#0a6ed1' },
@@ -15842,6 +15766,7 @@ function neelConsDocs(tx, master) {
     if (t.action === 'Issued for Packing' || t.action === 'Issued to Dept' || t.action === 'Mounted') mvt = '261';
     else if (t.action === 'Scrapped') mvt = '551';
     else if (t.action === 'Received' || t.action === 'Returned' || t.action === 'Returned to Store') mvt = '501';
+    else if (t.action === 'GRN Correction') mvt = Number(t.delta) >= 0 ? '501' : '102';
     else if (t.action === 'Stock Adjustment') mvt = Number(t.delta) >= 0 ? '701' : '702';
     if (!mvt || !q) return;
     out.push({ id: t.id, materialNumber: c, movementType: mvt, quantity: q, postingDate: t.at });
@@ -16677,7 +16602,10 @@ function conNextPoNumber(pos) {
   return 'CP' + String(max + 1).padStart(4, '0');
 }
 function useConData() {
-  const [master, setMaster] = useSyncedStore(KEYS.consumablesMaster, DEFAULT_CONSUMABLES_MASTER);
+  const [masterRaw, setMasterRaw] = useSyncedStore(KEYS.consumablesMaster, DEFAULT_CONSUMABLES_MASTER);
+  // older items get sku / store category / department / HSN / GST / rack on read, and the filled-in list is saved with the next change
+  const master = useMemo(() => storeEnsureFields(masterRaw || []), [masterRaw]);
+  const setMaster = useCallback((u) => setMasterRaw(prev => { const base = storeEnsureFields(prev || []); return typeof u === 'function' ? u(base) : u; }), [setMasterRaw]);
   const [tx, setTx] = useSyncedStore(KEYS.consumablesTx, []);
   const [instances] = useSyncedStore(KEYS.toolingInstances, DEFAULT_TOOLING_INSTANCES);
   const [pos, setPos] = useSyncedStore('ctpm:consumable_pos', []);
@@ -16724,6 +16652,906 @@ function ConBar({ pct, color }) {
   return <div style={{ background: C.borderSoft, borderRadius: 4, height: 8, width: 120 }}><div style={{ width: Math.max(0, Math.min(100, pct)) + '%', background: color || 'var(--neel-accent, #0a6ed1)', height: 8, borderRadius: 4 }} /></div>;
 }
 
+/* =========================================================================
+   STORES V2  (Master Store, Consumables & Others / Maintenance & Projects stores,
+   Purchase Requisitions, and permission-guarded PR / PO / GRN edit + delete)
+
+   Data model: still ONE item table, ctpm:consumables_master. Every item now also carries
+     sku, store_category, department, hsn, gst_pct, rack_bin   (name = the single "Item Description")
+   Older items are filled in on read by storeEnsureFields(), so nothing existing breaks.
+   New shared keys: ctpm:purchase_requisitions, ctpm:hsn_master.
+   ========================================================================= */
+const STORE_CATEGORIES = ['Consumables & Others', 'Maintenance & Projects'];
+const STORE_CAT_PREFIX = { 'Consumables & Others': 'CON', 'Maintenance & Projects': 'MNT' };
+const STORE_DEPARTMENTS = [
+  { name: 'Electrical', prefix: 'ELE' }, { name: 'Mechanical', prefix: 'MEC' }, { name: 'Production', prefix: 'PRD' },
+  { name: 'Tooling/Dies', prefix: 'TLD' }, { name: 'Packaging', prefix: 'PKG' }, { name: 'Utility', prefix: 'UTL' },
+  { name: 'Melting', prefix: 'MLT' }, { name: 'Quality / Lab', prefix: 'QLT' }, { name: 'Civil / Projects', prefix: 'PRJ' },
+  { name: 'General', prefix: 'GEN' },
+];
+const STORE_UOMS = ['Nos', 'Kg', 'Ltr', 'Mtr', 'Set', 'Box', 'Roll'];
+const GST_SLABS = [0, 5, 12, 18, 28, 40];
+const PR_STORE_KEY = 'ctpm:purchase_requisitions';
+const HSN_STORE_KEY = 'ctpm:hsn_master';
+// Starting HSN -> GST mapping. These are only seed values: confirm each rate against the current GST notification
+// (or your tax advisor) and correct them in Master Store > HSN codes. The Admin / store team can add more.
+const DEFAULT_HSN_TABLE = [
+  { hsn: '8207', desc: 'Interchangeable tools - dies, drawing / extrusion dies', gst: 18 },
+  { hsn: '8209', desc: 'Tungsten carbide plates / tips for tools', gst: 18 },
+  { hsn: '3403', desc: 'Lubricating preparations', gst: 18 },
+  { hsn: '2710', desc: 'Petroleum oils, lubricating oil, grease base', gst: 18 },
+  { hsn: '3801', desc: 'Graphite, artificial / colloidal', gst: 18 },
+  { hsn: '6815', desc: 'Graphite articles (casting dies, crucibles)', gst: 18 },
+  { hsn: '4415', desc: 'Wooden packing cases, pallets, drums, bobbins', gst: 18 },
+  { hsn: '4819', desc: 'Corrugated cartons, boxes, packing rings', gst: 18 },
+  { hsn: '3920', desc: 'Plastic film / stretch wrap', gst: 18 },
+  { hsn: '3923', desc: 'Plastic packing articles, end caps', gst: 18 },
+  { hsn: '7326', desc: 'Iron or steel articles - packaging strap', gst: 18 },
+  { hsn: '7318', desc: 'Screws, bolts, nuts, washers', gst: 18 },
+  { hsn: '8482', desc: 'Ball / roller bearings', gst: 18 },
+  { hsn: '8481', desc: 'Taps, cocks, valves', gst: 18 },
+  { hsn: '8536', desc: 'Electrical switches, relays, contactors, connectors', gst: 18 },
+  { hsn: '8544', desc: 'Insulated wire and cable', gst: 18 },
+  { hsn: '4016', desc: 'Rubber articles - seals, gaskets, O-rings', gst: 18 },
+  { hsn: '4009', desc: 'Rubber / plastic hoses', gst: 18 },
+];
+const STORE_ITEM_TYPES = ['General Consumable', 'Spare Part', 'Electrical Spare', 'Mechanical Spare', 'Lubricant', 'Carbide Die', 'Mandrel Plug', 'Drawing Ring', 'Graphite Die', 'Wooden Bobbin', 'Wooden Pallet', 'Corrugated Ring', 'End Cap', 'Iron Strap', 'Stretch Film'];
+const STORE_APPLIES_TO = ['All', 'Melting', 'Milling', 'Rolling', 'Cascade', 'Spinner', 'LWC', 'PCC', 'CTL', 'Annealing', 'Maintenance', 'Utilities'];
+const PR_STATUSES = ['Open', 'Converted to PO', 'Rejected'];
+
+const storeDeptPrefix = (d) => (STORE_DEPARTMENTS.find(x => x.name === d) || {}).prefix || 'GEN';
+const storeSkuPrefix = (cat, dept) => (STORE_CAT_PREFIX[cat] || 'CON') + '-' + storeDeptPrefix(dept) + '-';
+// next running number for a Category + Department pair, e.g. MNT-ELE-0007
+function storeNextSku(master, cat, dept) {
+  const prefix = storeSkuPrefix(cat, dept);
+  let max = 0;
+  (master || []).forEach(m => {
+    const s = String(m.sku || '');
+    if (s.indexOf(prefix) === 0) { const n = parseInt(s.slice(prefix.length), 10); if (n > max) max = n; }
+  });
+  return prefix + String(max + 1).padStart(4, '0');
+}
+function storeGuessDept(m) {
+  if (TOOL_CATEGORY_SET.has(m.category)) return 'Tooling/Dies';
+  const code = String(m.code || ''); const applies = String(m.applies_to || '');
+  if (code.indexOf('PK-') === 0 || Number(m.standard_qty_per_unit) > 0) return 'Packaging';
+  if (applies === 'Melting') return 'Melting';
+  return 'General';
+}
+// Fills the new fields on older items. Returns the SAME array when nothing needs filling (so it is cheap to call on every read).
+function storeEnsureFields(list) {
+  const src = list || [];
+  let changed = false;
+  const out = [];
+  src.forEach(m => {
+    let n = m;
+    if (!n.store_category || !n.department || n.hsn === undefined || n.gst_pct === undefined || n.rack_bin === undefined) {
+      n = Object.assign({}, n, {
+        store_category: n.store_category || STORE_CATEGORIES[0],
+        department: n.department || storeGuessDept(n),
+        hsn: n.hsn === undefined ? '' : n.hsn,
+        gst_pct: n.gst_pct === undefined ? 0 : n.gst_pct,
+        rack_bin: n.rack_bin === undefined ? '' : n.rack_bin,
+      });
+    }
+    if (!n.sku) n = Object.assign({}, n, { sku: storeNextSku(out.concat(src), n.store_category, n.department) });
+    if (n !== m) changed = true;
+    out.push(n);
+  });
+  return changed ? out : src;
+}
+// what a PR / PO line copies from the Master Store at the moment it is created
+function procLineSnap(item) {
+  const it = item || {};
+  return { sku: it.sku || it.code || '', desc: it.name || '', hsn: it.hsn || '', gst_pct: Number(it.gst_pct) || 0, uom: it.uom || '' };
+}
+function procNextNo(values, prefix) {
+  let max = 0;
+  (values || []).forEach(v => { const s = String(v || ''); if (s.indexOf(prefix) === 0) max = Math.max(max, parseInt(s.slice(prefix.length), 10) || 0); });
+  return prefix + String(max + 1).padStart(4, '0');
+}
+function usePrData() {
+  const [prs, setPrs] = useSyncedStore(PR_STORE_KEY, []);
+  return { prs: prs || [], setPrs };
+}
+function useHsnTable() {
+  const [rows, setRows] = useSyncedStore(HSN_STORE_KEY, DEFAULT_HSN_TABLE);
+  return [rows && rows.length ? rows : DEFAULT_HSN_TABLE, setRows];
+}
+function storeStatusOf(m, stock) {
+  const min = Number(m.min_stock_level) || 0;
+  if (stock <= 0) return 'Out of stock';
+  if (min > 0 && stock <= min) return 'Below minimum';
+  return 'OK';
+}
+function storeDefaultsForRole(role) {
+  const maint = role === 'Maintenance - Electrical' || role === 'Maintenance - Mechanical' || role === 'Tool Room';
+  const dept = role === 'Maintenance - Electrical' ? 'Electrical' : role === 'Maintenance - Mechanical' ? 'Mechanical' : role === 'Tool Room' ? 'Tooling/Dies' : role === 'Production' ? 'Production' : '';
+  return { category: maint ? 'Maintenance & Projects' : '', department: dept };
+}
+
+/* ---------- permissions (UI AND state level) ---------- */
+// The Admin always keeps PO / GRN delete, so the Admin can never be locked out of cleaning up purchase documents.
+function procCan(user, key) {
+  if (!user) return false;
+  if (user.role === 'Admin' && (key === 'proc.po.delete' || key === 'proc.grn.delete')) return true;
+  return canDo(user.role, key);
+}
+const procDeny = (what) => ({ ok: false, text: 'Your role is not allowed to ' + what + '. The Admin can change this in Master > Access (Stores & Procurement).' });
+function procAudit(user, action, entityType, entityId, details) {
+  try { logAudit({ actor: (user && user.name) || 'unknown', action, entityType, entityId, details }); } catch (e) { /* audit must never block the work */ }
+}
+
+/* ---------- Purchase Requisition actions ---------- */
+function procPrActions({ user, prs, setPrs, master }) {
+  const byId = Object.fromEntries((master || []).map(m => [m.id, m]));
+  const buildLines = (lines) => lines.map(l => {
+    const it = byId[l.itemId] || {};
+    return Object.assign({ id: l.id || uid(), itemId: l.itemId, qty: Number(l.qty), stockAtRaise: Number(it.stock_qty) || 0, minLevel: Number(it.min_stock_level) || 0 }, procLineSnap(it));
+  });
+  const check = (d) => {
+    if (!STORE_CATEGORIES.includes(d.storeCategory)) return 'Choose the store (Consumables & Others or Maintenance & Projects).';
+    if (!d.department) return 'Choose the requesting department.';
+    const lines = (d.lines || []).filter(l => l.itemId || Number(l.qty));
+    if (!lines.length) return 'Add at least one item.';
+    if (lines.some(l => !byId[l.itemId] || !(Number(l.qty) > 0))) return 'Every line needs an item and a quantity above zero.';
+    if (new Set(lines.map(l => l.itemId)).size !== lines.length) return 'An item is listed twice. Combine it into one line.';
+    return '';
+  };
+  return {
+    create(d) {
+      if (!procCan(user, 'proc.pr.create')) return procDeny('raise purchase requisitions');
+      const err = check(d); if (err) return { ok: false, text: err };
+      const pr = {
+        id: uid(), prNumber: procNextNo(prs.map(p => p.prNumber), 'PR'), date: todayKey(), requestedBy: user.name || '', requesterRole: user.role,
+        storeCategory: d.storeCategory, department: d.department, priority: d.priority || 'Normal', remarks: (d.remarks || '').trim(),
+        status: 'Open', poNumber: '', lines: buildLines(d.lines.filter(l => l.itemId || Number(l.qty))),
+      };
+      setPrs(prev => [pr].concat(prev || []));
+      procAudit(user, 'create', 'purchase_requisition', pr.id, { prNumber: pr.prNumber, items: pr.lines.length, store: pr.storeCategory });
+      return { ok: true, text: 'Purchase requisition ' + pr.prNumber + ' raised.', pr };
+    },
+    edit(prId, d) {
+      if (!procCan(user, 'proc.pr.edit')) return procDeny('edit purchase requisitions');
+      const cur = prs.find(p => p.id === prId);
+      if (!cur) return { ok: false, text: 'That requisition no longer exists.' };
+      if (cur.status !== 'Open') return { ok: false, text: cur.prNumber + ' is ' + cur.status + ' and can no longer be edited.' };
+      const err = check(d); if (err) return { ok: false, text: err };
+      setPrs(prev => (prev || []).map(p => p.id !== prId ? p : Object.assign({}, p, {
+        storeCategory: d.storeCategory, department: d.department, priority: d.priority || 'Normal', remarks: (d.remarks || '').trim(),
+        lines: buildLines(d.lines.filter(l => l.itemId || Number(l.qty))), editedBy: user.name || '', editedAt: new Date().toISOString(),
+      })));
+      procAudit(user, 'update', 'purchase_requisition', prId, { prNumber: cur.prNumber });
+      return { ok: true, text: 'Requisition ' + cur.prNumber + ' updated.' };
+    },
+    reject(prId, reason) {
+      if (!procCan(user, 'proc.pr.edit')) return procDeny('reject purchase requisitions');
+      const cur = prs.find(p => p.id === prId);
+      if (!cur || cur.status !== 'Open') return { ok: false, text: 'Only an open requisition can be rejected.' };
+      setPrs(prev => (prev || []).map(p => p.id !== prId ? p : Object.assign({}, p, { status: 'Rejected', rejectReason: reason || '', rejectedBy: user.name || '' })));
+      procAudit(user, 'status_change', 'purchase_requisition', prId, { prNumber: cur.prNumber, newStatus: 'Rejected' });
+      return { ok: true, text: 'Requisition ' + cur.prNumber + ' rejected.' };
+    },
+    remove(prId) {
+      if (!procCan(user, 'proc.pr.delete')) return procDeny('delete purchase requisitions');
+      const cur = prs.find(p => p.id === prId);
+      if (!cur) return { ok: false, text: 'That requisition no longer exists.' };
+      if (cur.status === 'Converted to PO') return { ok: false, text: cur.prNumber + ' is already on purchase order ' + cur.poNumber + '. Delete or cancel that PO first.' };
+      setPrs(prev => (prev || []).filter(p => p.id !== prId));
+      procAudit(user, 'delete', 'purchase_requisition', prId, { prNumber: cur.prNumber });
+      return { ok: true, text: 'Requisition ' + cur.prNumber + ' deleted.' };
+    },
+  };
+}
+
+/* ---------- GRN grouping: older receipts have no GRN number, so they get a stable one on read ---------- */
+function procGrnGroups(receipts) {
+  const groups = {};
+  (receipts || []).forEach(r => {
+    const key = r.grnNo || ('L|' + r.at + '|' + (r.vendor || '') + '|' + (r.invoiceNo || '') + '|' + (r.poNumber || ''));
+    const g = groups[key] = groups[key] || { key, grnNo: r.grnNo || '', legacy: !r.grnNo, at: r.at, date: r.date, vendor: r.vendor, invoiceNo: r.invoiceNo, poNumber: r.poNumber || '', by: r.by, rows: [] };
+    g.rows.push(r);
+  });
+  const list = Object.values(groups);
+  list.filter(g => g.legacy).sort((a, b) => String(a.at).localeCompare(String(b.at)) || a.key.localeCompare(b.key))
+    .forEach((g, i) => { g.grnNo = 'GRN' + String(i + 1).padStart(4, '0'); });
+  return list.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+}
+const procNextGrnNo = (receipts) => procNextNo(procGrnGroups(receipts).map(g => g.grnNo), 'GRN');
+// writes the (derived) GRN number onto every older receipt row, so numbers stay fixed once anyone edits or deletes a GRN
+function procAssignGrnNumbers(receipts) {
+  const num = {};
+  procGrnGroups(receipts).forEach(g => g.rows.forEach(r => { num[r.id] = g.grnNo; }));
+  return (receipts || []).map(r => r.grnNo ? r : Object.assign({}, r, { grnNo: num[r.id] }));
+}
+
+/* ---------- PO / GRN actions: every one re-checks the permission, so the rule holds even if a screen forgets to hide a button ---------- */
+function procPoGrnActions({ user, pos, setPos, receipts, setReceipts, prs, setPrs, setMaster, setTx, itemById, onAdjustRaw, onAdjustFinished }) {
+  const nowIso = () => new Date().toISOString();
+  // move stock of one item by delta (receipt reversal / correction); returns an error text or ''
+  const moveStock = (itemId, delta, ref) => {
+    const it = itemById[itemId]; if (!it || !delta) return '';
+    const opts = { movementType: delta > 0 ? '101' : '102', refDoc: ref };
+    if (it.source === 'cons') {
+      setMaster(prev => prev.map(m => m.id === itemId ? Object.assign({}, m, { stock_qty: conR2(Math.max(0, (Number(m.stock_qty) || 0) + delta)) }) : m));
+      setTx(prev => [{ id: 'TX-' + uid().toUpperCase(), at: nowIso(), consumable_id: itemId, instance_id: '', machine_id: 'Store', production_order_id: ref, action: 'GRN Correction', qty_issued: Math.abs(delta), delta, reason_for_removal: 'N/A', by: (user && user.name) || 'Store' }].concat(prev));
+    } else if (it.source === 'raw') { if (onAdjustRaw) onAdjustRaw(it.rawId, delta, opts); }
+    else if (onAdjustFinished) onAdjustFinished(it.finId, delta, opts);
+    return '';
+  };
+  const poLineFor = (po, row) => (po.lines || []).find(l => l.id === row.poLineId) || (po.lines || []).find(l => l.itemId === row.itemId);
+  const bumpPoReceived = (poNumber, row, delta) => {
+    if (!poNumber || !delta) return;
+    setPos(prev => prev.map(p => {
+      if (p.poNumber !== poNumber) return p;
+      const target = poLineFor(p, row); if (!target) return p;
+      return Object.assign({}, p, { lines: (p.lines || []).map(l => l.id === target.id ? Object.assign({}, l, { received: conR2(Math.max(0, (Number(l.received) || 0) + delta)) }) : l) });
+    }));
+  };
+  return {
+    /* ----- PO ----- */
+    editPo(poId, d) {
+      if (!procCan(user, 'proc.po.edit')) return procDeny('edit purchase orders');
+      const po = pos.find(p => p.id === poId);
+      if (!po) return { ok: false, text: 'That purchase order no longer exists.' };
+      const st = conPoStatus(po);
+      if (st === 'Cancelled' || st === 'Closed') return { ok: false, text: po.poNumber + ' is ' + st + ' and cannot be edited.' };
+      if (!String(d.vendor || '').trim()) return { ok: false, text: 'Enter the vendor name.' };
+      const lines = (d.lines || []).filter(l => l.itemId && Number(l.qty) > 0);
+      if (!lines.length) return { ok: false, text: 'A purchase order needs at least one item.' };
+      if (new Set(lines.map(l => l.itemId)).size !== lines.length) return { ok: false, text: 'An item is listed twice. Combine it into one line.' };
+      const kept = new Set(lines.map(l => l.id).filter(Boolean));
+      const dropped = (po.lines || []).find(l => (Number(l.received) || 0) > 0 && !kept.has(l.id));
+      if (dropped) return { ok: false, text: ((itemById[dropped.itemId] || {}).name || 'An item') + ' has already been received and cannot be removed.' };
+      const low = lines.find(l => { const old = (po.lines || []).find(x => x.id === l.id); return old && Number(l.qty) < (Number(old.received) || 0); });
+      if (low) return { ok: false, text: ((itemById[low.itemId] || {}).name || 'An item') + ': quantity cannot go below what was already received.' };
+      const next = lines.map(l => {
+        const old = (po.lines || []).find(x => x.id === l.id);
+        return old ? Object.assign({}, old, { qty: Number(l.qty), rate: Number(l.rate) || 0 })
+          : Object.assign({ id: uid(), itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate) || 0, received: 0 }, procLineSnap(itemById[l.itemId]));
+      });
+      setPos(prev => prev.map(p => p.id !== poId ? p : Object.assign({}, p, { vendor: String(d.vendor).trim(), deliveryDate: d.deliveryDate || '', lines: next, editedBy: (user && user.name) || '', editedAt: nowIso() })));
+      procAudit(user, 'update', 'purchase_order', poId, { poNumber: po.poNumber, vendor: String(d.vendor).trim() });
+      return { ok: true, text: 'Purchase order ' + po.poNumber + ' updated.' };
+    },
+    deletePo(poId) {
+      if (!procCan(user, 'proc.po.delete')) return procDeny('delete purchase orders');
+      const po = pos.find(p => p.id === poId);
+      if (!po) return { ok: false, text: 'That purchase order no longer exists.' };
+      setPos(prev => prev.filter(p => p.id !== poId));
+      // a requisition that was converted into this PO goes back to Open so it is not lost
+      setPrs(prev => (prev || []).map(p => p.poNumber === po.poNumber && p.status === 'Converted to PO' ? Object.assign({}, p, { status: 'Open', poNumber: '' }) : p));
+      procAudit(user, 'delete', 'purchase_order', poId, { poNumber: po.poNumber, vendor: po.vendor, status: conPoStatus(po) });
+      return { ok: true, text: 'Purchase order ' + po.poNumber + ' deleted.' };
+    },
+    /* ----- GRN ----- */
+    grnShortfalls(g) {
+      const out = [];
+      g.rows.forEach(r => { const it = itemById[r.itemId]; if (it && (Number(it.stock_qty) || 0) < Number(r.qty)) out.push(it.name + ': only ' + conQty(it.stock_qty) + ' ' + (it.uom || '') + ' in stock, ' + conQty(r.qty) + ' was received (the rest has already been issued).'); });
+      return out;
+    },
+    deleteGrn(g) {
+      if (!procCan(user, 'proc.grn.delete')) return procDeny('delete goods receipts');
+      const ids = new Set(g.rows.map(r => r.id));
+      g.rows.forEach(r => { moveStock(r.itemId, -Number(r.qty), 'GRN ' + g.grnNo + ' deleted'); bumpPoReceived(r.poNumber, r, -Number(r.qty)); });
+      setReceipts(prev => procAssignGrnNumbers(prev).filter(r => !ids.has(r.id)));
+      procAudit(user, 'delete', 'goods_receipt', g.grnNo, { grnNo: g.grnNo, vendor: g.vendor, poNumber: g.poNumber, lines: g.rows.length });
+      return { ok: true, text: g.grnNo + ' deleted and its stock reversed.' };
+    },
+    editGrn(g, d) {
+      if (!procCan(user, 'proc.grn.edit')) return procDeny('edit goods receipts');
+      if (!String(d.vendor || '').trim()) return { ok: false, text: 'Enter the vendor.' };
+      const edits = d.lines || [];
+      if (edits.some(l => !(Number(l.qty) > 0) || !(Number(l.rate) >= 0) || l.rate === '')) return { ok: false, text: 'Every line needs a quantity above zero and a rate.' };
+      const plan = [];
+      for (let i = 0; i < g.rows.length; i++) {
+        const r = g.rows[i]; const e = edits.find(x => x.id === r.id); if (!e) continue;
+        const delta = conR2(Number(e.qty) - Number(r.qty)); const it = itemById[r.itemId];
+        if (delta < 0 && it && (Number(it.stock_qty) || 0) + delta < 0) return { ok: false, text: it.name + ': that quantity is lower than what is already issued from stock. Correct it with a stock adjustment instead.' };
+        if (delta > 0 && r.poNumber) {
+          const po = pos.find(p => p.poNumber === r.poNumber); const pl = po ? poLineFor(po, r) : null;
+          if (pl && (Number(pl.received) || 0) + delta > Number(pl.qty) * 1.1 + 1e-9) return { ok: false, text: (it ? it.name : 'Item') + ': more than the PO quantity (10% tolerance).' };
+        }
+        plan.push({ r, delta, qty: Number(e.qty), rate: Number(e.rate) });
+      }
+      plan.forEach(p => {
+        if (p.delta) { moveStock(p.r.itemId, p.delta, 'GRN ' + g.grnNo + ' edited'); bumpPoReceived(p.r.poNumber, p.r, p.delta); }
+        const it = itemById[p.r.itemId];
+        const valueDelta = p.qty * p.rate - Number(p.r.qty) * Number(p.r.rate);
+        if (it && it.source === 'cons' && valueDelta) {   // keep the moving-average cost in step with a corrected invoice rate
+          setMaster(prev => prev.map(m => { if (m.id !== p.r.itemId) return m; const s = Number(m.stock_qty) || 0; return s > 0 ? Object.assign({}, m, { unit_cost: conR2(Math.max(0, ((Number(m.unit_cost) || 0) * s + valueDelta) / s)) }) : m; }));
+        }
+      });
+      const header = { vendor: String(d.vendor).trim(), invoiceNo: String(d.invoiceNo || '').trim(), date: d.date || g.date };
+      setReceipts(prev => procAssignGrnNumbers(prev).map(r => {
+        const p = plan.find(x => x.r.id === r.id);
+        if (!g.rows.some(x => x.id === r.id)) return r;
+        return Object.assign({}, r, header, { grnNo: g.grnNo }, p ? { qty: p.qty, rate: p.rate } : {}, { editedBy: (user && user.name) || '', editedAt: nowIso() });
+      }));
+      procAudit(user, 'update', 'goods_receipt', g.grnNo, { grnNo: g.grnNo, vendor: header.vendor, lines: plan.length });
+      return { ok: true, text: g.grnNo + ' updated.' };
+    },
+  };
+}
+
+function StFld({ label, children, style, hint }) {
+  return (
+    <div style={style}>
+      <label style={{ display: 'block', fontSize: 11.5, color: C.subtext, marginBottom: 3 }}>{label}</label>
+      {children}
+      {hint && <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>{hint}</div>}
+    </div>
+  );
+}
+const stFull = Object.assign({}, invInp, { width: '100%' });
+function StConfirm({ title, children, confirmLabel, danger, onConfirm, onClose }) {
+  return (
+    <ConModal title={title} onClose={onClose} width={500}
+      footer={<><button type="button" style={invBtnGhost} onClick={onClose}>Cancel</button>
+        <button type="button" data-testid="st-confirm" style={Object.assign({}, invBtn, danger ? { background: C.red } : {})} onClick={onConfirm}>{confirmLabel || 'Confirm'}</button></>}>
+      <div style={{ fontSize: 13, color: C.ink, lineHeight: 1.5 }}>{children}</div>
+    </ConModal>
+  );
+}
+
+/* ------------------------------ HSN table (HSN -> GST %) ------------------------------ */
+function StHsnModal({ rows, onSave, onClose }) {
+  const [list, setList] = useState(() => rows.map(r => Object.assign({}, r)));
+  const [err, setErr] = useState('');
+  const setRow = (i, patch) => setList(prev => prev.map((r, j) => j === i ? Object.assign({}, r, patch) : r));
+  const save = () => {
+    const clean = list.filter(r => r.hsn || r.desc);
+    if (clean.some(r => !/^\d{4,8}$/.test(String(r.hsn)))) { setErr('Every HSN code must be 4 to 8 digits.'); return; }
+    if (new Set(clean.map(r => String(r.hsn))).size !== clean.length) { setErr('An HSN code is listed twice.'); return; }
+    onSave(clean.map(r => ({ hsn: String(r.hsn), desc: String(r.desc || '').trim(), gst: Number(r.gst) || 0 })));
+  };
+  return (
+    <ConModal title="HSN codes and GST %" onClose={onClose} width={720}
+      footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }}>{err}</span><button type="button" style={invBtnGhost} onClick={onClose}>Cancel</button><button type="button" style={invBtn} onClick={save} data-testid="hsn-save">Save table</button></>}>
+      <div style={{ fontSize: 12, color: C.subtext, marginBottom: 10 }}>Picking an HSN code on an item fills its GST % from this table (the item can still override it). The starting rates are only a guide: confirm each one against the current GST notification or your tax advisor.</div>
+      {list.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input value={r.hsn} onChange={e => setRow(i, { hsn: e.target.value.replace(/\D/g, '').slice(0, 8) })} placeholder="HSN" className="font-mono" style={Object.assign({}, invInp, { width: 100 })} />
+          <input value={r.desc} onChange={e => setRow(i, { desc: e.target.value })} placeholder="What it covers" style={Object.assign({}, invInp, { flex: '1 1 220px' })} />
+          <select value={r.gst} onChange={e => setRow(i, { gst: Number(e.target.value) })} style={Object.assign({}, invInp, { width: 80 })}>{GST_SLABS.map(s => <option key={s} value={s}>{s}%</option>)}</select>
+          <button type="button" aria-label="Remove HSN" onClick={() => setList(prev => prev.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><Trash2 size={14} /></button>
+        </div>
+      ))}
+      <button type="button" style={invBtnGhost} onClick={() => setList(prev => prev.concat([{ hsn: '', desc: '', gst: 18 }]))}><Plus size={13} /> Add HSN code</button>
+    </ConModal>
+  );
+}
+
+/* ------------------------------ add / edit one Master Store item ------------------------------ */
+function StoreItemModal({ item, master, hsnRows, onSave, onClose }) {
+  const isNew = !item;
+  const [f, setF] = useState(() => item ? {
+    store_category: item.store_category, department: item.department, name: item.name || '', hsn: item.hsn || '', gst_pct: String(item.gst_pct ?? ''),
+    uom: item.uom || 'Nos', rack_bin: item.rack_bin || '', min_stock_level: String(item.min_stock_level ?? ''), stock_qty: '', unit_cost: String(item.unit_cost ?? ''),
+    category: item.category || 'General Consumable', applies_to: item.applies_to || 'All', target_life_meters: String(item.target_life_meters || ''), target_life_kg: String(item.target_life_kg || ''), standard_qty_per_unit: String(item.standard_qty_per_unit || ''),
+  } : {
+    store_category: '', department: '', name: '', hsn: '', gst_pct: '', uom: 'Nos', rack_bin: '', min_stock_level: '', stock_qty: '', unit_cost: '',
+    category: 'General Consumable', applies_to: 'All', target_life_meters: '', target_life_kg: '', standard_qty_per_unit: '',
+  });
+  const [saveMap, setSaveMap] = useState(true);
+  const [gstTouched, setGstTouched] = useState(false);
+  const [adv, setAdv] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (patch) => setF(prev => Object.assign({}, prev, patch));
+  const sku = item ? item.sku : (f.store_category && f.department ? storeNextSku(master, f.store_category, f.department) : '');
+  const hsnHit = f.hsn ? hsnRows.find(r => r.hsn === f.hsn) : null;
+  const onHsn = (raw) => {
+    const v = String(raw).replace(/\D/g, '').slice(0, 8);
+    const hit = hsnRows.find(r => r.hsn === v);
+    if (hit) { set({ hsn: v, gst_pct: String(hit.gst) }); setGstTouched(false); } else set({ hsn: v });
+  };
+  const uomOpts = STORE_UOMS.includes(f.uom) || !f.uom ? STORE_UOMS : [f.uom].concat(STORE_UOMS);
+  const types = Array.from(new Set(STORE_ITEM_TYPES.concat(master.map(m => m.category).filter(Boolean))));
+  const applies = Array.from(new Set(STORE_APPLIES_TO.concat(master.map(m => m.applies_to).filter(Boolean))));
+  const save = () => {
+    if (!f.store_category) { setErr('Choose the Store Category.'); return; }
+    if (!f.department) { setErr('Choose the Department.'); return; }
+    if (!f.name.trim()) { setErr('Enter the Item Description (specification, size, make, part number).'); return; }
+    if (f.hsn && !/^\d{4,8}$/.test(f.hsn)) { setErr('HSN code must be 4 to 8 digits.'); return; }
+    if (f.gst_pct === '' && f.hsn) { setErr('Choose the GST %.'); return; }
+    if (!f.uom) { setErr('Choose the UOM.'); return; }
+    if (Number(f.min_stock_level) < 0 || Number(f.stock_qty) < 0 || Number(f.unit_cost) < 0) { setErr('Quantities and cost cannot be negative.'); return; }
+    const dup = master.find(m => m.id !== (item && item.id) && m.store_category === f.store_category && String(m.name).trim().toLowerCase() === f.name.trim().toLowerCase());
+    if (dup) { setErr('This description already exists in this store as ' + dup.sku + '.'); return; }
+    const base = item || { id: 'cm-' + uid() };
+    const out = Object.assign({}, base, {
+      store_category: f.store_category, department: f.department, sku, code: item ? item.code : sku, name: f.name.trim(),
+      hsn: f.hsn, gst_pct: Number(f.gst_pct) || 0, uom: f.uom, rack_bin: f.rack_bin.trim(), min_stock_level: Number(f.min_stock_level) || 0,
+      unit_cost: Number(f.unit_cost) || 0, category: f.category, applies_to: f.applies_to,
+      target_life_meters: Number(f.target_life_meters) || 0, target_life_kg: Number(f.target_life_kg) || 0, standard_qty_per_unit: Number(f.standard_qty_per_unit) || 0,
+      stock_qty: item ? item.stock_qty : (Number(f.stock_qty) || 0),
+    });
+    const newMap = saveMap && f.hsn && !hsnHit ? { hsn: f.hsn, desc: f.name.trim().slice(0, 60), gst: Number(f.gst_pct) || 0 } : null;
+    const e = onSave(out, newMap);
+    if (e) setErr(e);
+  };
+  return (
+    <ConModal title={isNew ? 'Add item to Master Store' : 'Edit item ' + item.sku} onClose={onClose} width={780}
+      footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }} role="alert">{err}</span><button type="button" style={invBtnGhost} onClick={onClose}>Cancel</button><button type="button" style={invBtn} onClick={save} data-testid="msi-save">{isNew ? 'Add item' : 'Save changes'}</button></>}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+        <StFld label="Store Category *"><select value={f.store_category} onChange={e => set({ store_category: e.target.value })} data-testid="msi-cat" style={stFull}><option value="">Select</option>{STORE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></StFld>
+        <StFld label="Department *"><select value={f.department} onChange={e => set({ department: e.target.value })} data-testid="msi-dept" style={stFull}><option value="">Select</option>{STORE_DEPARTMENTS.map(d => <option key={d.name}>{d.name}</option>)}</select></StFld>
+        <StFld label="SKU No." hint={isNew ? 'Generated from Store Category + Department' : 'Fixed once assigned'}>
+          <input readOnly value={sku || 'Choose category and department'} data-testid="msi-sku" className="font-mono" style={Object.assign({}, stFull, { background: C.panelAlt, fontWeight: 700, color: C.copper })} /></StFld>
+      </div>
+      <StFld label="Item Description * (specification, size, make or part number)" style={{ marginTop: 12 }}>
+        <input value={f.name} onChange={e => set({ name: e.target.value })} data-testid="msi-name" placeholder="e.g. Contactor 3-pole 32A, Siemens 3RT2026" style={stFull} /></StFld>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginTop: 12 }}>
+        <StFld label="HSN Code" hint={hsnHit ? 'GST filled from the HSN table' : (f.hsn ? 'Not in the HSN table yet' : 'Type or pick a code')}>
+          <input list="st-hsn-list" value={f.hsn} onChange={e => onHsn(e.target.value)} data-testid="msi-hsn" className="font-mono" placeholder="e.g. 8536" style={stFull} />
+          <datalist id="st-hsn-list">{hsnRows.map(r => <option key={r.hsn} value={r.hsn}>{r.desc + ' (' + r.gst + '%)'}</option>)}</datalist></StFld>
+        <StFld label="GST %" hint={gstTouched && hsnHit && Number(f.gst_pct) !== Number(hsnHit.gst) ? 'Overridden (table says ' + hsnHit.gst + '%)' : ''}>
+          <select value={f.gst_pct} onChange={e => { set({ gst_pct: e.target.value }); setGstTouched(true); }} data-testid="msi-gst" style={stFull}><option value="">-</option>{GST_SLABS.map(s => <option key={s} value={s}>{s}%</option>)}</select></StFld>
+        <StFld label="UOM *"><select value={f.uom} onChange={e => set({ uom: e.target.value })} data-testid="msi-uom" style={stFull}>{uomOpts.map(u => <option key={u}>{u}</option>)}</select></StFld>
+        <StFld label="Rack / Bin Location"><input value={f.rack_bin} onChange={e => set({ rack_bin: e.target.value })} data-testid="msi-rack" placeholder="Rack A - Bin 04" style={stFull} /></StFld>
+        <StFld label="Min Stock / Reorder Level"><input type="number" min="0" value={f.min_stock_level} onChange={e => set({ min_stock_level: e.target.value })} data-testid="msi-min" style={stFull} /></StFld>
+        {isNew && <StFld label="Opening stock"><input type="number" min="0" value={f.stock_qty} onChange={e => set({ stock_qty: e.target.value })} data-testid="msi-open" style={stFull} /></StFld>}
+      </div>
+      {f.hsn && !hsnHit && f.gst_pct !== '' && <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12.5, color: C.subtext, marginTop: 8 }}><input type="checkbox" checked={saveMap} onChange={e => setSaveMap(e.target.checked)} /> Remember HSN {f.hsn} = {f.gst_pct}% for future items</label>}
+      {!isNew && <div style={{ fontSize: 12, color: C.subtext, marginTop: 8 }}>Current stock is {conQty(item.stock_qty)} {item.uom}. Change it with a goods receipt, an issue or a stock adjustment so the movement is recorded.</div>}
+      <button type="button" style={Object.assign({}, invBtnGhost, { marginTop: 12 })} onClick={() => setAdv(v => !v)}>{adv ? 'Hide' : 'Show'} tooling and packaging details</button>
+      {adv && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginTop: 10, padding: 12, background: C.panelAlt, borderRadius: 8 }}>
+          <StFld label="Item type"><select value={f.category} onChange={e => set({ category: e.target.value })} style={stFull}>{types.map(t => <option key={t}>{t}</option>)}</select></StFld>
+          <StFld label="Applies to"><select value={f.applies_to} onChange={e => set({ applies_to: e.target.value })} style={stFull}>{applies.map(t => <option key={t}>{t}</option>)}</select></StFld>
+          <StFld label="Unit cost (INR)"><input type="number" min="0" value={f.unit_cost} onChange={e => set({ unit_cost: e.target.value })} style={stFull} /></StFld>
+          <StFld label="Target life (m) - tools"><input type="number" min="0" value={f.target_life_meters} onChange={e => set({ target_life_meters: e.target.value })} style={stFull} /></StFld>
+          <StFld label="Target life (kg) - tools"><input type="number" min="0" value={f.target_life_kg} onChange={e => set({ target_life_kg: e.target.value })} style={stFull} /></StFld>
+          <StFld label="Std qty per output unit - packaging"><input type="number" min="0" step="0.01" value={f.standard_qty_per_unit} onChange={e => set({ standard_qty_per_unit: e.target.value })} style={stFull} /></StFld>
+        </div>
+      )}
+    </ConModal>
+  );
+}
+
+/* ------------------------------ MASTER STORE: the single item catalog for every store ------------------------------ */
+function MasterStoreTab({ user, data, prs, hsnRows, setHsnRows }) {
+  const { master, setMaster, tx, pos, receipts, instances } = data;
+  const [q, setQ] = useState(''); const [cat, setCat] = useState('All'); const [dept, setDept] = useState('All'); const [rack, setRack] = useState('');
+  const [modal, setModal] = useState(null);     // { item } | 'new'
+  const [del, setDel] = useState(null);
+  const [hsnOpen, setHsnOpen] = useState(false);
+  const [note, setNote] = useState(null);
+  const canManage = !!user && canDo(user.role, 'masterstore.manage');
+  const canDelete = !!user && canDo(user.role, 'masterstore.delete');
+  const shown = master.filter(m => (cat === 'All' || m.store_category === cat) && (dept === 'All' || m.department === dept)
+    && (!rack.trim() || String(m.rack_bin || '').toLowerCase().includes(rack.trim().toLowerCase()))
+    && (!q.trim() || (m.sku + ' ' + m.name + ' ' + (m.code || '')).toLowerCase().includes(q.trim().toLowerCase())));
+  const usage = (m) => {
+    const u = [];
+    if (pos.some(p => (p.lines || []).some(l => l.itemId === m.id))) u.push('purchase orders');
+    if (receipts.some(r => r.itemId === m.id)) u.push('goods receipts');
+    if (tx.some(t => t.consumable_id === m.id)) u.push('stock movements');
+    if (instances.some(i => i.consumable_master_id === m.id)) u.push('the tooling register');
+    if (prs.some(p => (p.lines || []).some(l => l.itemId === m.id))) u.push('purchase requisitions');
+    return u;
+  };
+  const onSave = (item, newMap) => {
+    if (!canManage) return 'Your role cannot change the Master Store.';
+    const exists = master.some(m => m.id === item.id);
+    // two people adding at once: never hand out the same SKU twice
+    if (!exists && master.some(m => m.sku === item.sku)) { item = Object.assign({}, item, { sku: storeNextSku(master, item.store_category, item.department) }); item.code = item.sku; }
+    setMaster(prev => exists ? prev.map(m => m.id === item.id ? item : m) : prev.concat([item]));
+    if (newMap) setHsnRows(prev => (prev && prev.length ? prev : DEFAULT_HSN_TABLE).concat([newMap]));
+    procAudit(user, exists ? 'update' : 'create', 'master_store_item', item.id, { sku: item.sku, name: item.name });
+    setModal(null); setNote({ ok: true, text: (exists ? 'Updated ' : 'Added ') + item.sku + '.' });
+    return '';
+  };
+  const doDelete = () => {
+    const m = del; setDel(null);
+    if (!canDelete) { setNote({ ok: false, text: 'Your role cannot delete Master Store items.' }); return; }
+    const u = usage(m);
+    if (u.length) { setNote({ ok: false, text: m.sku + ' is used in ' + u.join(', ') + ' and cannot be deleted.' }); return; }
+    setMaster(prev => prev.filter(x => x.id !== m.id));
+    procAudit(user, 'delete', 'master_store_item', m.id, { sku: m.sku, name: m.name });
+    setNote({ ok: true, text: m.sku + ' deleted.' });
+  };
+  const th = invTh;
+  return (
+    <div>
+      <ConNote note={note} />
+      <Card style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search SKU or item description" data-testid="ms-search" style={Object.assign({}, invInp, { flex: '1 1 240px' })} />
+          <select value={cat} onChange={e => setCat(e.target.value)} data-testid="ms-cat" style={invInp}>{['All'].concat(STORE_CATEGORIES).map(c => <option key={c} value={c}>{c === 'All' ? 'All stores' : c}</option>)}</select>
+          <select value={dept} onChange={e => setDept(e.target.value)} data-testid="ms-dept" style={invInp}>{['All'].concat(STORE_DEPARTMENTS.map(d => d.name)).map(c => <option key={c} value={c}>{c === 'All' ? 'All departments' : c}</option>)}</select>
+          <input value={rack} onChange={e => setRack(e.target.value)} placeholder="Rack / bin" data-testid="ms-rack" style={Object.assign({}, invInp, { width: 130 })} />
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+            {shown.length > 0 && <ExportButton label="Export" onExport={() => exportToExcel('master-store.xlsx', { 'Master Store': shown.map(m => ({ SKU: m.sku, 'Item Description': m.name, 'Store Category': m.store_category, Department: m.department, HSN: m.hsn, 'GST %': m.gst_pct, UOM: m.uom, 'Rack / Bin': m.rack_bin, 'Min stock': m.min_stock_level, Stock: m.stock_qty })) })} />}
+            {canManage && <button type="button" style={Object.assign({}, invBtn, { background: '#fff', color: 'var(--neel-accent, #0a6ed1)', border: '1px solid var(--neel-accent, #0a6ed1)' })} onClick={() => setHsnOpen(true)} data-testid="ms-hsn">HSN codes</button>}
+            {canManage && <button type="button" style={invBtn} onClick={() => setModal('new')} data-testid="ms-add"><Plus size={13} /> Add item</button>}
+          </span>
+        </div>
+      </Card>
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        {shown.length === 0 ? <EmptyState title="No items match" sub="Change the search or the filters." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 1000 }}>
+              <thead><tr style={{ background: C.panelAlt }}>{['SKU', 'Item Description', 'Store', 'Department', 'HSN', 'GST', 'UOM', 'Rack / Bin', 'Min', 'Stock', ''].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>{shown.map(m => {
+                const stock = Number(m.stock_qty) || 0; const st = storeStatusOf(m, stock);
+                return (
+                  <tr key={m.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                    <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: C.copper, whiteSpace: 'nowrap' }}>{m.sku}</td>
+                    <td style={{ padding: '8px 12px', fontWeight: 600, color: C.ink }}>{m.name}</td>
+                    <td style={{ padding: '8px 12px' }}><Badge tone={m.store_category === STORE_CATEGORIES[1] ? 'blue' : 'default'}>{m.store_category}</Badge></td>
+                    <td style={{ padding: '8px 12px', color: C.subtext }}>{m.department}</td>
+                    <td className="font-mono" style={{ padding: '8px 12px' }}>{m.hsn || '\u2014'}</td>
+                    <td style={{ padding: '8px 12px' }}>{m.hsn || Number(m.gst_pct) ? m.gst_pct + '%' : '\u2014'}</td>
+                    <td style={{ padding: '8px 12px' }}>{m.uom}</td>
+                    <td style={{ padding: '8px 12px', color: C.subtext }}>{m.rack_bin || '\u2014'}</td>
+                    <td className="font-mono" style={{ padding: '8px 12px' }}>{conQty(m.min_stock_level)}</td>
+                    <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: st === 'OK' ? C.ink : C.red }}>{conQty(stock)}</td>
+                    <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                      {canManage && <button type="button" style={invBtnGhost} onClick={() => setModal({ item: m })} data-testid={'ms-edit-' + m.sku}>Edit</button>}
+                      {canDelete && <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red, marginLeft: 8 })} onClick={() => setDel(m)} data-testid={'ms-del-' + m.sku}>Delete</button>}
+                    </td>
+                  </tr>);
+              })}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      <div style={{ fontSize: 12, color: C.subtext, marginTop: 8 }}>{shown.length} of {master.length} items. Every store, the tooling register, purchase requisitions and purchase orders read from this one list.</div>
+      {modal && <StoreItemModal item={modal === 'new' ? null : modal.item} master={master} hsnRows={hsnRows} onSave={onSave} onClose={() => setModal(null)} />}
+      {hsnOpen && <StHsnModal rows={hsnRows} onClose={() => setHsnOpen(false)} onSave={(rows) => { setHsnRows(rows); setHsnOpen(false); setNote({ ok: true, text: 'HSN table saved.' }); }} />}
+      {del && <StConfirm title="Delete item" danger confirmLabel="Delete item" onClose={() => setDel(null)} onConfirm={doDelete}>Delete <strong>{del.sku}</strong> ({del.name}) from the Master Store? An item that is already used in an order, receipt, stock movement or requisition cannot be deleted.</StConfirm>}
+    </div>
+  );
+}
+
+/* ------------------------------ one store's stock list (Consumables & Others | Maintenance & Projects) ------------------------------ */
+function StoreStockView({ category, user, data, prs, onRaisePr, setTab }) {
+  const { master, pos, tx } = data;
+  const [q, setQ] = useState(''); const [dept, setDept] = useState('All'); const [rack, setRack] = useState(''); const [stat, setStat] = useState('All');
+  const use60 = useMemo(() => conUseRates(tx, 60), [tx]);
+  const onOrder = useMemo(() => { const m = {}; pos.filter(conPoOpen).forEach(p => (p.lines || []).forEach(l => { m[l.itemId] = (m[l.itemId] || 0) + Math.max(0, Number(l.qty) - (Number(l.received) || 0)); })); return m; }, [pos]);
+  const openPr = useMemo(() => { const m = {}; prs.filter(p => p.status === 'Open').forEach(p => (p.lines || []).forEach(l => { m[l.itemId] = (m[l.itemId] || 0) + Number(l.qty); })); return m; }, [prs]);
+  const rows = master.filter(m => m.store_category === category).map(m => {
+    const stock = Number(m.stock_qty) || 0; const daily = (use60[m.id] || 0) / 60;
+    return { m, stock, status: storeStatusOf(m, stock), cover: daily > 0 ? stock / daily : null, value: stock * (Number(m.unit_cost) || 0), onOrder: onOrder[m.id] || 0, prQty: openPr[m.id] || 0 };
+  });
+  const shown = rows.filter(r => (dept === 'All' || r.m.department === dept) && (stat === 'All' || (stat === 'Needs attention' ? r.status !== 'OK' : r.status === stat))
+    && (!rack.trim() || String(r.m.rack_bin || '').toLowerCase().includes(rack.trim().toLowerCase()))
+    && (!q.trim() || (r.m.sku + ' ' + r.m.name).toLowerCase().includes(q.trim().toLowerCase())));
+  const attention = rows.filter(r => r.status !== 'OK').length;
+  const canRaise = procCan(user, 'proc.pr.create');
+  const canStore = !!user && canDo(user.role, 'inventory.adjust');
+  const showValue = !!user && (canDo(user.role, 'cost.view') || canStore);
+  const tone = (s) => s === 'OK' ? 'green' : s === 'Below minimum' ? 'amber' : 'red';
+  const depts = ['All'].concat(Array.from(new Set(rows.map(r => r.m.department))).sort());
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginBottom: 12 }}>
+        <ConKpi label="Items" value={String(rows.length)} sub={'in ' + category} />
+        <ConKpi label="Needs attention" value={String(attention)} tone={attention ? 'red' : 'green'} sub="out of stock or below minimum" />
+        {showValue && <ConKpi label="Stock value" value={conRs(rows.reduce((t, r) => t + r.value, 0))} sub="quantity x average rate" />}
+        <ConKpi label="Open requisitions" value={String(prs.filter(p => p.status === 'Open' && p.storeCategory === category).length)} sub="waiting for a purchase order" />
+      </div>
+      <Card style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search SKU or item description" data-testid="ss-search" style={Object.assign({}, invInp, { flex: '1 1 240px' })} />
+          <select value={dept} onChange={e => setDept(e.target.value)} data-testid="ss-dept" style={invInp}>{depts.map(c => <option key={c} value={c}>{c === 'All' ? 'All departments' : c}</option>)}</select>
+          <input value={rack} onChange={e => setRack(e.target.value)} placeholder="Rack / bin" data-testid="ss-rack" style={Object.assign({}, invInp, { width: 130 })} />
+          <select value={stat} onChange={e => setStat(e.target.value)} data-testid="ss-status" style={invInp}>{['All', 'Needs attention', 'OK', 'Below minimum', 'Out of stock'].map(c => <option key={c}>{c}</option>)}</select>
+          {shown.length > 0 && <ExportButton label="Export" onExport={() => exportToExcel(category.replace(/\W+/g, '-').toLowerCase() + '-stock.xlsx', { Stock: shown.map(r => ({ SKU: r.m.sku, 'Item Description': r.m.name, Department: r.m.department, 'Rack / Bin': r.m.rack_bin, Stock: r.stock, UOM: r.m.uom, 'Min stock': r.m.min_stock_level, 'On order': r.onOrder, Status: r.status })) })} />}
+        </div>
+      </Card>
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        {shown.length === 0 ? <EmptyState title="No items match" sub={rows.length ? 'Change the search or the filters.' : 'No item has been added to this store yet. Add it in Master Store.'} /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 980 }}>
+              <thead><tr style={{ background: C.panelAlt }}>{['SKU / Item', 'Department', 'Rack / Bin', 'Stock', 'Min level', 'On order', showValue ? 'Stock value' : null, 'Cover', 'Status', ''].filter(Boolean).map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+              <tbody>{shown.map(r => (
+                <tr key={r.m.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                  <td style={{ padding: '8px 12px' }}><div style={{ fontWeight: 600, color: C.ink }}>{r.m.name}</div><div className="font-mono" style={{ fontSize: 11, color: C.faint }}>{r.m.sku}</div></td>
+                  <td style={{ padding: '8px 12px', color: C.subtext }}>{r.m.department}</td>
+                  <td style={{ padding: '8px 12px', color: C.subtext }}>{r.m.rack_bin || '\u2014'}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700 }}>{conQty(r.stock)} {r.m.uom}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{conQty(r.m.min_stock_level)}</td>
+                  <td className="font-mono" style={{ padding: '8px 12px', color: r.onOrder ? C.blue : C.faint }}>{r.onOrder ? conQty(r.onOrder) : '\u2014'}</td>
+                  {showValue && <td className="font-mono" style={{ padding: '8px 12px' }}>{conRs(r.value)}</td>}
+                  <td className="font-mono" style={{ padding: '8px 12px' }}>{r.cover === null ? '\u2014' : Math.round(r.cover) + ' d'}</td>
+                  <td style={{ padding: '8px 12px' }}><Badge tone={tone(r.status)}>{r.status}</Badge>{r.prQty > 0 && <div style={{ fontSize: 11, color: C.blue, marginTop: 2 }}>PR open: {conQty(r.prQty)}</div>}</td>
+                  <td style={{ padding: '8px 12px', whiteSpace: 'nowrap' }}>
+                    {r.status !== 'OK' && canRaise && <button type="button" style={Object.assign({}, invBtn, { padding: '4px 10px', fontSize: 12 })} onClick={() => onRaisePr(r.m)} data-testid={'ss-pr-' + r.m.sku}>Raise PR</button>}
+                    {canStore && <><button type="button" style={Object.assign({}, invBtnGhost, { marginLeft: 8 })} onClick={() => setTab('conpurchase')}>Receive</button><button type="button" style={Object.assign({}, invBtnGhost, { marginLeft: 8 })} onClick={() => setTab('constore')}>Issue</button></>}
+                  </td>
+                </tr>))}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------ Purchase Requisition: raise / edit ------------------------------ */
+function StPrModal({ pr, preItem, master, user, onSave, onClose }) {
+  const defaults = storeDefaultsForRole(user && user.role);
+  const [f, setF] = useState(() => pr ? { storeCategory: pr.storeCategory, department: pr.department, priority: pr.priority || 'Normal', remarks: pr.remarks || '', lines: pr.lines.map(l => ({ id: l.id, itemId: l.itemId, qty: String(l.qty) })) }
+    : {
+      storeCategory: preItem ? preItem.store_category : (defaults.category || ''), department: defaults.department || (preItem ? preItem.department : ''), priority: preItem && Number(preItem.stock_qty) <= 0 ? 'Urgent' : 'Normal', remarks: '',
+      lines: [preItem ? { id: uid(), itemId: preItem.id, qty: String(Math.max(1, Math.ceil((Number(preItem.min_stock_level) || 0) * 2 - (Number(preItem.stock_qty) || 0)))) } : { id: uid(), itemId: '', qty: '' }],
+    });
+  const [err, setErr] = useState('');
+  const byId = useMemo(() => Object.fromEntries(master.map(m => [m.id, m])), [master]);
+  const items = master.filter(m => !f.storeCategory || m.store_category === f.storeCategory);
+  const setLine = (i, patch) => setF(prev => Object.assign({}, prev, { lines: prev.lines.map((l, j) => j === i ? Object.assign({}, l, patch) : l) }));
+  const submit = () => { const e = onSave(f); if (e) setErr(e); };
+  return (
+    <ConModal title={pr ? 'Edit requisition ' + pr.prNumber : 'Raise Purchase Requisition'} onClose={onClose} width={820}
+      footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }} role="alert">{err}</span><button type="button" style={invBtnGhost} onClick={onClose}>Cancel</button><button type="button" style={invBtn} onClick={submit} data-testid="pr-save">{pr ? 'Save changes' : 'Raise PR'}</button></>}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <StFld label="Store *" style={{ flex: '1 1 200px' }}><select value={f.storeCategory} onChange={e => setF(Object.assign({}, f, { storeCategory: e.target.value, lines: f.lines.map(l => (byId[l.itemId] && byId[l.itemId].store_category !== e.target.value) ? Object.assign({}, l, { itemId: '' }) : l) }))} data-testid="pr-store" style={stFull}><option value="">Select</option>{STORE_CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></StFld>
+        <StFld label="Requesting department *" style={{ flex: '1 1 180px' }}><select value={f.department} onChange={e => setF(Object.assign({}, f, { department: e.target.value }))} data-testid="pr-dept" style={stFull}><option value="">Select</option>{STORE_DEPARTMENTS.map(d => <option key={d.name}>{d.name}</option>)}</select></StFld>
+        <StFld label="Priority" style={{ flex: '0 1 130px' }}><select value={f.priority} onChange={e => setF(Object.assign({}, f, { priority: e.target.value }))} style={stFull}>{['Normal', 'Urgent'].map(p => <option key={p}>{p}</option>)}</select></StFld>
+      </div>
+      {f.lines.map((l, i) => {
+        const m = byId[l.itemId];
+        return (
+          <div key={l.id} style={{ marginBottom: 10, paddingBottom: 8, borderBottom: '1px dashed ' + C.borderSoft }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select value={l.itemId} onChange={e => setLine(i, { itemId: e.target.value })} data-testid={'pr-item-' + i} style={Object.assign({}, invInp, { flex: '2 1 260px' })}>
+                <option value="">Select item</option>{items.map(x => <option key={x.id} value={x.id}>{x.sku + ' - ' + x.name}</option>)}
+              </select>
+              <input type="number" min="0" placeholder={'Qty' + (m ? ' (' + m.uom + ')' : '')} value={l.qty} onChange={e => setLine(i, { qty: e.target.value })} data-testid={'pr-qty-' + i} style={Object.assign({}, invInp, { width: 120 })} />
+              <button type="button" aria-label="Remove item" onClick={() => setF(prev => Object.assign({}, prev, { lines: prev.lines.length > 1 ? prev.lines.filter((_, j) => j !== i) : prev.lines }))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><Trash2 size={14} /></button>
+            </div>
+            {m && <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 3 }}>{m.name} | HSN {m.hsn || '\u2014'} | GST {Number(m.gst_pct) || 0}% | UOM {m.uom} | In stock {conQty(m.stock_qty)} (min {conQty(m.min_stock_level)}){m.rack_bin ? ' | ' + m.rack_bin : ''}</div>}
+          </div>
+        );
+      })}
+      <button type="button" style={invBtnGhost} onClick={() => setF(prev => Object.assign({}, prev, { lines: prev.lines.concat([{ id: uid(), itemId: '', qty: '' }]) }))}><Plus size={13} /> Add item</button>
+      <StFld label="Remarks / reason" style={{ marginTop: 12 }}><input value={f.remarks} onChange={e => setF(Object.assign({}, f, { remarks: e.target.value }))} placeholder="e.g. breakdown spare for Mill 2 gearbox" style={stFull} /></StFld>
+    </ConModal>
+  );
+}
+
+function PurchaseRequisitionsTab({ user, data, prs, setPrs, setTab, onRaise }) {
+  const [q, setQ] = useState(''); const [stat, setStat] = useState('All'); const [cat, setCat] = useState('All'); const [dept, setDept] = useState('All');
+  const [open, setOpen] = useState(null); const [edit, setEdit] = useState(null); const [del, setDel] = useState(null); const [rej, setRej] = useState(null); const [reason, setReason] = useState('');
+  const [note, setNote] = useState(null);
+  const acts = procPrActions({ user, prs, setPrs, master: data.master });
+  const canCreate = procCan(user, 'proc.pr.create'); const canEdit = procCan(user, 'proc.pr.edit'); const canDelete = procCan(user, 'proc.pr.delete');
+  const canMakePo = !!user && canDo(user.role, 'inventory.adjust');
+  const shown = prs.filter(p => (stat === 'All' || p.status === stat) && (cat === 'All' || p.storeCategory === cat) && (dept === 'All' || p.department === dept)
+    && (!q.trim() || (p.prNumber + ' ' + p.requestedBy + ' ' + (p.lines || []).map(l => l.sku + ' ' + l.desc).join(' ')).toLowerCase().includes(q.trim().toLowerCase())));
+  const makePo = (p) => { try { sessionStorage.setItem('neel_pr_to_po', p.prNumber); } catch (e) { /* ignore */ } setTab('conpurchase'); };
+  const run = (r) => setNote({ ok: r.ok, text: r.text });
+  return (
+    <div>
+      <ConNote note={note} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginBottom: 12 }}>
+        <ConKpi label="Open" value={String(prs.filter(p => p.status === 'Open').length)} sub="waiting for a purchase order" />
+        <ConKpi label="Urgent open" value={String(prs.filter(p => p.status === 'Open' && p.priority === 'Urgent').length)} tone={prs.some(p => p.status === 'Open' && p.priority === 'Urgent') ? 'red' : undefined} />
+        <ConKpi label="Converted to PO" value={String(prs.filter(p => p.status === 'Converted to PO').length)} />
+      </div>
+      <Card style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search PR no, requester, SKU or item" data-testid="pr-search" style={Object.assign({}, invInp, { flex: '1 1 240px' })} />
+          <select value={stat} onChange={e => setStat(e.target.value)} style={invInp}>{['All'].concat(PR_STATUSES).map(c => <option key={c}>{c}</option>)}</select>
+          <select value={cat} onChange={e => setCat(e.target.value)} style={invInp}>{['All'].concat(STORE_CATEGORIES).map(c => <option key={c} value={c}>{c === 'All' ? 'All stores' : c}</option>)}</select>
+          <select value={dept} onChange={e => setDept(e.target.value)} style={invInp}>{['All'].concat(STORE_DEPARTMENTS.map(d => d.name)).map(c => <option key={c} value={c}>{c === 'All' ? 'All departments' : c}</option>)}</select>
+          {canCreate && <button type="button" style={Object.assign({}, invBtn, { marginLeft: 'auto' })} onClick={() => onRaise(null)} data-testid="pr-new"><Plus size={13} /> Raise PR</button>}
+        </div>
+      </Card>
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        {shown.length === 0 ? <EmptyState title="No requisitions" sub={canCreate ? 'Use Raise PR, or raise one straight from a store row that is low.' : 'Requisitions will appear here.'} /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 860 }}>
+              <thead><tr style={{ background: C.panelAlt }}>{['PR', 'Date', 'Requested by', 'Store', 'Department', 'Items', 'Priority', 'Status'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+              <tbody>{shown.map(p => (
+                <React.Fragment key={p.id}>
+                  <tr onClick={() => setOpen(open === p.id ? null : p.id)} style={{ borderTop: '1px solid ' + C.borderSoft, cursor: 'pointer' }}>
+                    <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: C.copper }}>{p.prNumber}</td>
+                    <td style={{ padding: '8px 12px', color: C.subtext }}>{p.date}</td>
+                    <td style={{ padding: '8px 12px' }}>{p.requestedBy}</td>
+                    <td style={{ padding: '8px 12px' }}>{p.storeCategory}</td>
+                    <td style={{ padding: '8px 12px', color: C.subtext }}>{p.department}</td>
+                    <td style={{ padding: '8px 12px' }}>{(p.lines || []).length}</td>
+                    <td style={{ padding: '8px 12px' }}><Badge tone={p.priority === 'Urgent' ? 'red' : 'default'}>{p.priority || 'Normal'}</Badge></td>
+                    <td style={{ padding: '8px 12px' }}><Badge tone={p.status === 'Open' ? 'amber' : p.status === 'Rejected' ? 'default' : 'green'}>{p.status}</Badge>{p.poNumber && <span className="font-mono" style={{ marginLeft: 6, fontSize: 11.5, color: C.subtext }}>{p.poNumber}</span>}</td>
+                  </tr>
+                  {open === p.id && (
+                    <tr style={{ background: C.panelAlt }}><td colSpan={8} style={{ padding: 12 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                        <thead><tr>{['SKU', 'Item Description', 'HSN', 'GST', 'UOM', 'Qty', 'Stock when raised'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+                        <tbody>{(p.lines || []).map(l => (
+                          <tr key={l.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                            <td className="font-mono" style={{ padding: '6px 12px' }}>{l.sku}</td><td style={{ padding: '6px 12px' }}>{l.desc}</td><td className="font-mono" style={{ padding: '6px 12px' }}>{l.hsn || '\u2014'}</td>
+                            <td style={{ padding: '6px 12px' }}>{Number(l.gst_pct) || 0}%</td><td style={{ padding: '6px 12px' }}>{l.uom}</td><td className="font-mono" style={{ padding: '6px 12px', fontWeight: 700 }}>{conQty(l.qty)}</td><td className="font-mono" style={{ padding: '6px 12px' }}>{conQty(l.stockAtRaise)}</td>
+                          </tr>))}</tbody>
+                      </table>
+                      {p.remarks && <div style={{ fontSize: 12.5, color: C.subtext, marginTop: 8 }}>Remarks: {p.remarks}</div>}
+                      {p.rejectReason && <div style={{ fontSize: 12.5, color: C.red, marginTop: 4 }}>Rejected: {p.rejectReason}</div>}
+                      <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap' }}>
+                        {p.status === 'Open' && canMakePo && <button type="button" style={invBtnGhost} onClick={() => makePo(p)} data-testid={'pr-po-' + p.prNumber}>Create purchase order</button>}
+                        {p.status === 'Open' && canEdit && <button type="button" style={invBtnGhost} onClick={() => setEdit(p)} data-testid={'pr-edit-' + p.prNumber}>Edit</button>}
+                        {p.status === 'Open' && canEdit && <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red })} onClick={() => { setRej(p); setReason(''); }}>Reject</button>}
+                        {canDelete && p.status !== 'Converted to PO' && <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red })} onClick={() => setDel(p)} data-testid={'pr-del-' + p.prNumber}>Delete</button>}
+                      </div>
+                    </td></tr>
+                  )}
+                </React.Fragment>))}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {edit && <StPrModal pr={edit} master={data.master} user={user} onClose={() => setEdit(null)} onSave={(f) => { const r = acts.edit(edit.id, f); if (!r.ok) return r.text; setEdit(null); run(r); return ''; }} />}
+      {del && <StConfirm title="Delete requisition" danger confirmLabel="Delete" onClose={() => setDel(null)} onConfirm={() => { run(acts.remove(del.id)); setDel(null); }}>Delete requisition <strong>{del.prNumber}</strong>?</StConfirm>}
+      {rej && <StConfirm title="Reject requisition" danger confirmLabel="Reject" onClose={() => setRej(null)} onConfirm={() => { run(acts.reject(rej.id, reason)); setRej(null); }}>
+        <div style={{ marginBottom: 8 }}>Reject <strong>{rej.prNumber}</strong>? Tell the requester why.</div><input value={reason} onChange={e => setReason(e.target.value)} placeholder="Reason" style={stFull} /></StConfirm>}
+    </div>
+  );
+}
+
+/* ------------------------------ ONE Stores screen: both stores, the Master Store and requisitions ------------------------------ */
+function StoresHub({ user, setTab, initialSub }) {
+  const data = useConData();
+  const { prs, setPrs } = usePrData();
+  const [hsnRows, setHsnRows] = useHsnTable();
+  const can = (k) => !!user && canDo(user.role, k);
+  const tabs = [
+    can('store.cons.view') && ['cons', STORE_CATEGORIES[0]],
+    can('store.maint.view') && ['maint', STORE_CATEGORIES[1]],
+    can('masterstore.view') && ['master', 'Master Store'],
+    can('proc.pr.view') && ['pr', 'Purchase Requisitions'],
+  ].filter(Boolean);
+  const [sub, setSub] = useState(() => (tabs.find(t => t[0] === initialSub) || tabs[0] || ['cons'])[0]);
+  const [raise, setRaise] = useState(null);       // { item } while the Raise PR form is open
+  const [note, setNote] = useState(null);
+  useEffect(() => { if (tabs.length && !tabs.some(t => t[0] === sub)) setSub(tabs[0][0]); }, [tabs.length]);
+  const acts = procPrActions({ user, prs, setPrs, master: data.master });
+  const link = Object.assign({}, invBtn, { background: '#fff', color: 'var(--neel-accent, #0a6ed1)', border: '1px solid var(--neel-accent, #0a6ed1)' });
+  if (!tabs.length) return <InvPageFrame title="Stores" sub="Master Store, stores and requisitions."><EmptyState title="No access" sub="Your role cannot open any part of the Stores. Ask the Admin (Master > Access)." /></InvPageFrame>;
+  return (
+    <InvPageFrame title="Stores & Master Store" sub="One item list for consumables, tooling, dies and maintenance spares. Raise a requisition when stock runs low."
+      right={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {can('tab.constore') && <button type="button" style={link} onClick={() => setTab('constore')}>Issue & Reorder</button>}
+        {can('tab.conpurchase') && <button type="button" style={link} onClick={() => setTab('conpurchase')}>Purchase Orders & GRN</button>}
+      </div>}>
+      <ConNote note={note} />
+      <ConTabs value={sub} onChange={setSub} tabs={tabs} />
+      {sub === 'cons' && <StoreStockView category={STORE_CATEGORIES[0]} user={user} data={data} prs={prs} setTab={setTab} onRaisePr={(item) => setRaise({ item })} />}
+      {sub === 'maint' && <StoreStockView category={STORE_CATEGORIES[1]} user={user} data={data} prs={prs} setTab={setTab} onRaisePr={(item) => setRaise({ item })} />}
+      {sub === 'master' && <MasterStoreTab user={user} data={data} prs={prs} hsnRows={hsnRows} setHsnRows={setHsnRows} />}
+      {sub === 'pr' && <PurchaseRequisitionsTab user={user} data={data} prs={prs} setPrs={setPrs} setTab={setTab} onRaise={(item) => setRaise({ item })} />}
+      {raise && <StPrModal preItem={raise.item} master={data.master} user={user} onClose={() => setRaise(null)}
+        onSave={(f) => { const r = acts.create(f); if (!r.ok) return r.text; setRaise(null); setNote({ ok: true, text: r.text + ' Purchase can now raise a PO from it.' }); setSub('pr'); return ''; }} />}
+    </InvPageFrame>
+  );
+}
+
+/* ------------------------------ PO edit (used inside Purchase & Goods Receipt) ------------------------------ */
+function StPoEditModal({ po, items, itemById, onSave, onClose }) {
+  const [vendor, setVendor] = useState(po.vendor || '');
+  const [due, setDue] = useState(po.deliveryDate || '');
+  const [lines, setLines] = useState(() => (po.lines || []).map(l => ({ id: l.id, itemId: l.itemId, qty: String(l.qty), rate: String(l.rate || ''), received: Number(l.received) || 0 })));
+  const [err, setErr] = useState('');
+  const setL = (i, patch) => setLines(prev => prev.map((l, j) => j === i ? Object.assign({}, l, patch) : l));
+  const total = lines.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.rate) || 0), 0);
+  const gst = lines.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.rate) || 0) * ((Number((itemById[l.itemId] || {}).gst_pct) || 0) / 100), 0);
+  return (
+    <ConModal title={'Edit purchase order ' + po.poNumber} onClose={onClose} width={800}
+      footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }} role="alert">{err}</span><span style={{ fontSize: 12.5, color: C.subtext }}>Taxable {conRs(total)} + GST {conRs(gst)}</span><span style={{ fontSize: 13, fontWeight: 700 }}>Total {conRs(total + gst)}</span>
+        <button type="button" style={invBtn} data-testid="poe-save" onClick={() => { const e = onSave({ vendor, deliveryDate: due, lines }); if (e) setErr(e); }}>Save changes</button></>}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <StFld label="Vendor *" style={{ flex: '1 1 240px' }}><input value={vendor} onChange={e => setVendor(e.target.value)} style={stFull} /></StFld>
+        <StFld label="Delivery date"><input type="date" value={due} onChange={e => setDue(e.target.value)} style={invInp} /></StFld>
+      </div>
+      {lines.map((l, i) => {
+        const m = itemById[l.itemId];
+        return (
+          <div key={l.id || i} style={{ marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              {l.id ? <div style={{ flex: '2 1 240px', fontSize: 13, fontWeight: 600 }}>{m ? (m.sku || m.code) + ' - ' + m.name : 'Deleted item'}</div>
+                : <select value={l.itemId} onChange={e => setL(i, { itemId: e.target.value })} style={Object.assign({}, invInp, { flex: '2 1 240px' })}><option value="">Select item</option>{items.map(x => <option key={x.id} value={x.id}>{(x.sku || x.code) + ' - ' + x.name}</option>)}</select>}
+              <input type="number" min="0" value={l.qty} onChange={e => setL(i, { qty: e.target.value })} data-testid={'poe-qty-' + i} placeholder={'Qty' + (m ? ' (' + m.uom + ')' : '')} style={Object.assign({}, invInp, { width: 110 })} />
+              <input type="number" min="0" step="0.01" value={l.rate} onChange={e => setL(i, { rate: e.target.value })} placeholder="Rate" style={Object.assign({}, invInp, { width: 110 })} />
+              {l.received > 0 ? <span style={{ fontSize: 11.5, color: C.subtext }}>{conQty(l.received)} received</span>
+                : <button type="button" aria-label="Remove item" onClick={() => setLines(prev => prev.length > 1 ? prev.filter((_, j) => j !== i) : prev)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><Trash2 size={14} /></button>}
+            </div>
+            {m && <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 2 }}>HSN {m.hsn || '\u2014'} | GST {Number(m.gst_pct) || 0}% | UOM {m.uom}</div>}
+          </div>
+        );
+      })}
+      <button type="button" style={invBtnGhost} onClick={() => setLines(prev => prev.concat([{ id: '', itemId: '', qty: '', rate: '', received: 0 }]))}><Plus size={13} /> Add item</button>
+    </ConModal>
+  );
+}
+
+/* ------------------------------ GRN register: every goods receipt, with permission-controlled edit and delete ------------------------------ */
+function StGrnEditModal({ g, itemById, onSave, onClose }) {
+  const [vendor, setVendor] = useState(g.vendor || '');
+  const [inv, setInv] = useState(g.invoiceNo || '');
+  const [date, setDate] = useState(g.date || todayKey());
+  const [lines, setLines] = useState(() => g.rows.map(r => ({ id: r.id, qty: String(r.qty), rate: String(r.rate) })));
+  const [err, setErr] = useState('');
+  const setL = (i, patch) => setLines(prev => prev.map((l, j) => j === i ? Object.assign({}, l, patch) : l));
+  return (
+    <ConModal title={'Edit ' + g.grnNo} onClose={onClose} width={760}
+      footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }} role="alert">{err}</span><button type="button" style={invBtnGhost} onClick={onClose}>Cancel</button>
+        <button type="button" style={invBtn} data-testid="grne-save" onClick={() => { const e = onSave({ vendor, invoiceNo: inv, date, lines }); if (e) setErr(e); }}>Save changes</button></>}>
+      <div style={{ fontSize: 12, color: C.subtext, marginBottom: 10 }}>Changing a quantity moves stock by the difference (and updates the PO's received quantity). Changing a rate updates the price history and the average cost.</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <StFld label="Vendor *" style={{ flex: '1 1 220px' }}><input value={vendor} onChange={e => setVendor(e.target.value)} style={stFull} readOnly={!!g.poNumber} /></StFld>
+        <StFld label="Invoice no."><input value={inv} onChange={e => setInv(e.target.value)} style={Object.assign({}, invInp, { width: 150 })} /></StFld>
+        <StFld label="Invoice date"><input type="date" value={date} onChange={e => setDate(e.target.value)} style={invInp} /></StFld>
+      </div>
+      {g.rows.map((r, i) => {
+        const m = itemById[r.itemId] || {};
+        return (
+          <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+            <div style={{ flex: '2 1 240px', fontSize: 13, fontWeight: 600 }}>{(m.sku || m.code || '') + ' ' + (m.name || 'Deleted item')}</div>
+            <input type="number" min="0" value={lines[i].qty} onChange={e => setL(i, { qty: e.target.value })} data-testid={'grne-qty-' + i} placeholder={'Qty' + (m.uom ? ' (' + m.uom + ')' : '')} style={Object.assign({}, invInp, { width: 110 })} />
+            <input type="number" min="0" step="0.01" value={lines[i].rate} onChange={e => setL(i, { rate: e.target.value })} data-testid={'grne-rate-' + i} placeholder="Rate" style={Object.assign({}, invInp, { width: 110 })} />
+          </div>
+        );
+      })}
+    </ConModal>
+  );
+}
+
+function StGrnRegister({ groups, itemById, acts, user, setNote }) {
+  const [q, setQ] = useState(''); const [open, setOpen] = useState(null); const [edit, setEdit] = useState(null); const [del, setDel] = useState(null);
+  const canEdit = procCan(user, 'proc.grn.edit'); const canDelete = procCan(user, 'proc.grn.delete');
+  const shown = groups.filter(g => !q.trim() || (g.grnNo + ' ' + g.vendor + ' ' + g.invoiceNo + ' ' + g.poNumber + ' ' + g.rows.map(r => (itemById[r.itemId] || {}).name || '').join(' ')).toLowerCase().includes(q.trim().toLowerCase()));
+  const val = (g) => g.rows.reduce((t, r) => t + (Number(r.qty) || 0) * (Number(r.rate) || 0), 0);
+  const gstVal = (g) => g.rows.reduce((t, r) => t + (Number(r.qty) || 0) * (Number(r.rate) || 0) * ((Number((itemById[r.itemId] || {}).gst_pct) || 0) / 100), 0);
+  const short = del ? acts.grnShortfalls(del) : [];
+  return (
+    <div>
+      <Card style={{ padding: 12, marginBottom: 12 }}><input value={q} onChange={e => setQ(e.target.value)} placeholder="Search GRN, vendor, invoice, PO or item" data-testid="grn-search" style={Object.assign({}, invInp, { width: '100%' })} /></Card>
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        {shown.length === 0 ? <EmptyState title="No goods receipts" sub="Receipts you post appear here with their GRN number." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 820 }}>
+              <thead><tr style={{ background: C.panelAlt }}>{['GRN', 'Date', 'Vendor', 'Invoice', 'PO', 'Items', 'Value (excl. GST)', 'By'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+              <tbody>{shown.map(g => (
+                <React.Fragment key={g.key}>
+                  <tr onClick={() => setOpen(open === g.key ? null : g.key)} style={{ borderTop: '1px solid ' + C.borderSoft, cursor: 'pointer' }}>
+                    <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: C.copper }}>{g.grnNo}</td>
+                    <td style={{ padding: '8px 12px', color: C.subtext }}>{g.date}</td><td style={{ padding: '8px 12px' }}>{g.vendor}</td>
+                    <td style={{ padding: '8px 12px', color: C.subtext }}>{g.invoiceNo || '\u2014'}</td><td className="font-mono" style={{ padding: '8px 12px', color: C.subtext }}>{g.poNumber || 'Direct'}</td>
+                    <td style={{ padding: '8px 12px' }}>{g.rows.length}</td><td className="font-mono" style={{ padding: '8px 12px' }}>{conRs(val(g))}</td><td style={{ padding: '8px 12px', color: C.subtext }}>{g.by || '\u2014'}</td>
+                  </tr>
+                  {open === g.key && (
+                    <tr style={{ background: C.panelAlt }}><td colSpan={8} style={{ padding: 12 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                        <thead><tr>{['SKU', 'Item Description', 'HSN', 'GST', 'UOM', 'Qty', 'Rate'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+                        <tbody>{g.rows.map(r => { const m = itemById[r.itemId] || {}; return (
+                          <tr key={r.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                            <td className="font-mono" style={{ padding: '6px 12px' }}>{m.sku || m.code || '\u2014'}</td><td style={{ padding: '6px 12px' }}>{m.name || 'Deleted item'}</td><td className="font-mono" style={{ padding: '6px 12px' }}>{m.hsn || '\u2014'}</td>
+                            <td style={{ padding: '6px 12px' }}>{Number(m.gst_pct) || 0}%</td><td style={{ padding: '6px 12px' }}>{m.uom}</td><td className="font-mono" style={{ padding: '6px 12px', fontWeight: 700 }}>{conQty(r.qty)}</td><td className="font-mono" style={{ padding: '6px 12px' }}>{conRs(r.rate, 2)}</td>
+                          </tr>); })}</tbody>
+                      </table>
+                      <div style={{ fontSize: 12, color: C.subtext, marginTop: 6 }}>GST on this receipt: {conRs(gstVal(g), 2)}</div>
+                      <div style={{ display: 'flex', gap: 14, marginTop: 8 }}>
+                        {canEdit && <button type="button" style={invBtnGhost} onClick={() => setEdit(g)} data-testid={'grn-edit-' + g.grnNo}>Edit</button>}
+                        {canDelete && <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red })} onClick={() => setDel(g)} data-testid={'grn-del-' + g.grnNo}>Delete</button>}
+                      </div>
+                    </td></tr>
+                  )}
+                </React.Fragment>))}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {edit && <StGrnEditModal g={edit} itemById={itemById} onClose={() => setEdit(null)} onSave={(d) => { const r = acts.editGrn(edit, d); if (!r.ok) return r.text; setEdit(null); setNote({ ok: true, text: r.text }); return ''; }} />}
+      {del && <StConfirm title={'Delete ' + del.grnNo} danger confirmLabel="Delete GRN" onClose={() => setDel(null)} onConfirm={() => { const r = acts.deleteGrn(del); setDel(null); setNote({ ok: r.ok, text: r.text }); }}>
+        <div>Delete <strong>{del.grnNo}</strong> from {del.vendor}? The {del.rows.length} received line(s) are removed from stock{del.poNumber ? ' and the received quantity on ' + del.poNumber + ' goes back down' : ''}.</div>
+        {short.length > 0 && <div style={{ marginTop: 8, color: C.red }}>{short.map((s, i) => <div key={i}>{'\u26A0 ' + s}</div>)}<div style={{ marginTop: 4 }}>Stock will be set to zero for these items.</div></div>}
+      </StConfirm>}
+    </div>
+  );
+}
+
 /* ------------------------------ PURCHASE ------------------------------ */
 function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItems, finishedItems, onAdjustRaw, onAdjustFinished, onSetPrice, oldPurchaseOrders }) {
   const { master, setMaster, tx, setTx, pos, setPos, receipts, setReceipts, byId: consById } = useConData();
@@ -16756,6 +17584,14 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
   const canPost = !!user && canDo(user.role, 'inventory.adjust');
   const vendors = Array.from(new Set(pos.map(p => p.vendor).concat(receipts.map(r => r.vendor)).filter(Boolean)));
   const lastRate = (itemId) => { const r = receipts.filter(x => x.itemId === itemId).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0]; return r ? r.rate : 0; };
+  // ---- requisitions, and the permission-guarded PO / GRN edit + delete ----
+  const { prs, setPrs } = usePrData();
+  const [prLoaded, setPrLoaded] = useState(null);
+  const [editPo, setEditPo] = useState(null);
+  const [delPo, setDelPo] = useState(null);
+  const acts = procPoGrnActions({ user, pos, setPos, receipts, setReceipts, prs, setPrs, setMaster, setTx, itemById, onAdjustRaw, onAdjustFinished });
+  const grnGroups = useMemo(() => procGrnGroups(receipts), [receipts]);
+  const canEditPo = procCan(user, 'proc.po.edit'); const canDeletePo = procCan(user, 'proc.po.delete');
 
   /* ---- create PO ---- */
   const [form, setForm] = useState(false);
@@ -16766,13 +17602,27 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
   const [openId, setOpenId] = useState(null);
   const setF = (i, patch) => setFl(prev => prev.map((l, j) => j === i ? Object.assign({}, l, patch) : l));
   const poTotal = fl.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.rate) || 0), 0);
+  const poGst = fl.reduce((t, l) => t + (Number(l.qty) || 0) * (Number(l.rate) || 0) * ((Number((itemById[l.itemId] || {}).gst_pct) || 0) / 100), 0);
+  const loadPr = (pr) => {
+    setPrLoaded(pr); setForm(true); setErr('');
+    setFl((pr.lines || []).map(l => ({ id: uid(), itemId: l.itemId, qty: String(l.qty), rate: String(lastRate(l.itemId) || (itemById[l.itemId] || {}).unit_cost || '') })));
+  };
+  // arriving from "Create purchase order" on a requisition: open the form with its items already filled in
+  useEffect(() => {
+    let n = null; try { n = sessionStorage.getItem('neel_pr_to_po'); } catch (e) { /* ignore */ }
+    if (!n) return;
+    try { sessionStorage.removeItem('neel_pr_to_po'); } catch (e) { /* ignore */ }
+    const pr = prs.find(p => p.prNumber === n && p.status === 'Open');
+    if (pr && canPost) { setSub('orders'); loadPr(pr); }
+  }, []);
   const createPo = () => {
     if (!canPost) { setErr('Your role cannot create purchase orders.'); return; }
     if (!vendor.trim()) { setErr('Enter the vendor name.'); return; }
-    const lines = fl.filter(l => l.itemId && Number(l.qty) > 0).map(l => ({ id: uid(), itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate) || 0, received: 0 }));
+    const lines = fl.filter(l => l.itemId && Number(l.qty) > 0).map(l => Object.assign({ id: uid(), itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate) || 0, received: 0 }, procLineSnap(itemById[l.itemId])));
     if (!lines.length) { setErr('Add at least one item with a quantity.'); return; }
-    const po = { id: uid(), poNumber: conNextPoNumber(pos), vendor: vendor.trim(), date: todayKey(), deliveryDate: due || '', createdBy: (user && user.name) || '', status: 'Open', lines };
+    const po = { id: uid(), poNumber: conNextPoNumber(pos), vendor: vendor.trim(), date: todayKey(), deliveryDate: due || '', createdBy: (user && user.name) || '', status: 'Open', lines, prNumber: prLoaded ? prLoaded.prNumber : '' };
     setPos(prev => [po].concat(prev));
+    if (prLoaded) { setPrs(prev => (prev || []).map(x => x.id === prLoaded.id ? Object.assign({}, x, { status: 'Converted to PO', poNumber: po.poNumber }) : x)); setPrLoaded(null); }
     setForm(false); setErr(''); setVendor(''); setFl([{ id: uid(), itemId: '', qty: '', rate: '' }]);
     setNote({ ok: true, text: 'Purchase order ' + po.poNumber + ' created.' }); setOpenId(po.id);
   };
@@ -16838,7 +17688,8 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
       const opts = { movementType: po ? '101' : '501', refDoc: po ? 'PO ' + po.poNumber : (invNo.trim() ? 'Inv ' + invNo.trim() : 'Direct purchase') };
       if (it.source === 'raw') { if (onAdjustRaw) onAdjustRaw(it.rawId, q, opts); } else if (onAdjustFinished) onAdjustFinished(it.finId, q, opts);
     });
-    setReceipts(prev => lines.map(l => ({ id: uid(), at: nowIso, date: invDate || todayKey(), vendor: rVendor.trim(), invoiceNo: invNo.trim(), itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate), poNumber: po ? po.poNumber : '', poRate: l.poRate || 0, by: (user && user.name) || '' })).concat(prev));
+    const newGrnNo = procNextGrnNo(receipts);
+    setReceipts(prev => lines.map(l => ({ id: uid(), grnNo: newGrnNo, poLineId: l.poLineId || '', hsn: itemById[l.itemId].hsn || '', gst_pct: Number(itemById[l.itemId].gst_pct) || 0, at: nowIso, date: invDate || todayKey(), vendor: rVendor.trim(), invoiceNo: invNo.trim(), itemId: l.itemId, qty: Number(l.qty), rate: Number(l.rate), poNumber: po ? po.poNumber : '', poRate: l.poRate || 0, by: (user && user.name) || '' })).concat(prev));
     setTx(prev => lines.filter(l => itemById[l.itemId].source === 'cons').map(l => ({ id: 'TX-' + uid().toUpperCase(), at: nowIso, consumable_id: l.itemId, instance_id: '', machine_id: 'Store', production_order_id: po ? po.poNumber : 'Direct purchase', action: 'Received', qty_issued: Number(l.qty), rate: Number(l.rate), vendor: rVendor.trim(), invoice_no: invNo.trim(), reason_for_removal: 'N/A', by: (user && user.name) || 'Store' })).concat(prev));
     if (po) {
       setPos(prev => prev.map(p => {
@@ -16847,7 +17698,7 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
         return Object.assign({}, p, { lines: ls });
       }));
     }
-    setNote({ ok: true, text: lines.length + ' item(s) received. Stock and average cost were updated and the prices were added to the price history.' });
+    setNote({ ok: true, text: newGrnNo + ': ' + lines.length + ' item(s) received. Stock and average cost were updated and the prices were added to the price history.' });
     setSrc(''); setRVendor(''); setInvNo(''); setRl([{ id: uid(), itemId: '', qty: '', rate: '', poLineId: null, poRate: 0 }]);
   };
 
@@ -16895,7 +17746,7 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
           <button type="button" style={Object.assign({}, invBtn, { marginTop: 8 })} onClick={migrateOld} data-testid="po-migrate">Move them here</button>
         </Card>
       )}
-      <ConTabs value={sub} onChange={setSub} tabs={[['orders', 'Purchase Orders'], ['receive', 'Goods Receipt'], ['prices', 'Price & Vendor History']]} />
+      <ConTabs value={sub} onChange={setSub} tabs={[['orders', 'Purchase Orders'], ['receive', 'Goods Receipt'], ['grn', 'GRN Register'], ['prices', 'Price & Vendor History']]} />
       {sub === 'orders' && pos.length > 0 && <label style={{ display: 'inline-flex', gap: 8, alignItems: 'center', fontSize: 12.5, color: C.subtext, margin: '0 0 10px' }}><input type="checkbox" checked={onlyLate} onChange={e => setOnlyLate(e.target.checked)} data-testid="po-late" /> Show only overdue orders</label>}
 
       {sub === 'orders' && (
@@ -16915,7 +17766,7 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
                       <React.Fragment key={p.id}>
                         <tr onClick={() => setOpenId(openId === p.id ? null : p.id)} style={{ borderTop: '1px solid ' + C.borderSoft, cursor: 'pointer' }}>
                           <td className="font-mono" style={{ padding: '8px 12px', fontWeight: 700, color: C.copper }}>{p.poNumber}</td>
-                          <td style={{ padding: '8px 12px' }}>{p.vendor}</td>
+                          <td style={{ padding: '8px 12px' }}>{p.vendor}{p.prNumber ? <span className="font-mono" style={{ marginLeft: 6, fontSize: 11, color: C.faint }}>{p.prNumber}</span> : null}</td>
                           <td style={{ padding: '8px 12px', color: C.subtext }}>{p.date}</td>
                           <td style={{ padding: '8px 12px', color: late ? C.red : C.subtext, fontWeight: late ? 700 : 400 }}>{p.deliveryDate || '\u2014'}</td>
                           <td className="font-mono" style={{ padding: '8px 12px' }}>{conRs(val)}</td>
@@ -16925,10 +17776,12 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
                         {openId === p.id && (
                           <tr style={{ background: C.panelAlt }}><td colSpan={7} style={{ padding: 12 }}>
                             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-                              <thead><tr>{['Item', 'Ordered', 'Received', 'Rate', 'Value'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+                              <thead><tr>{['Item', 'HSN', 'GST', 'Ordered', 'Received', 'Rate', 'Value'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
                               <tbody>{(p.lines || []).map(l => (
                                 <tr key={l.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
-                                  <td style={{ padding: '6px 12px' }}>{(itemById[l.itemId] || {}).name || 'Deleted item'}</td>
+                                  <td style={{ padding: '6px 12px' }}>{(itemById[l.itemId] || {}).name || l.desc || 'Deleted item'}</td>
+                                  <td className="font-mono" style={{ padding: '6px 12px' }}>{(l.hsn !== undefined ? l.hsn : (itemById[l.itemId] || {}).hsn) || '\u2014'}</td>
+                                  <td style={{ padding: '6px 12px' }}>{(l.gst_pct !== undefined ? Number(l.gst_pct) : Number((itemById[l.itemId] || {}).gst_pct)) || 0}%</td>
                                   <td style={{ padding: '6px 12px' }}>{conQty(l.qty)} {(itemById[l.itemId] || {}).uom}</td>
                                   <td style={{ padding: '6px 12px' }}>{conQty(l.received || 0)}</td>
                                   <td style={{ padding: '6px 12px' }}>{conRs(l.rate, 2)}</td>
@@ -16938,6 +17791,8 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
                             <div style={{ display: 'flex', gap: 14, marginTop: 10 }}>
                               {conPoOpen(p) && canPost && <button type="button" style={invBtnGhost} onClick={() => { setSub('receive'); loadPo(p.poNumber); }}>Receive goods</button>}
                               {st === 'Open' && canPost && <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red })} onClick={() => cancelPo(p)}>Cancel PO</button>}
+                              {canEditPo && (st === 'Open' || st === 'Partly received') && <button type="button" style={invBtnGhost} onClick={() => setEditPo(p)} data-testid={'po-edit-' + p.poNumber}>Edit PO</button>}
+                              {canDeletePo && <button type="button" style={Object.assign({}, invBtnGhost, { color: C.red })} onClick={() => setDelPo(p)} data-testid={'po-del-' + p.poNumber}>Delete PO</button>}
                             </div>
                           </td></tr>
                         )}
@@ -16994,11 +17849,12 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
           {receipts.length === 0 ? <EmptyState title="No receipts yet" sub="Goods you receive appear here, newest first." /> : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 640 }}>
-                <thead><tr style={{ background: C.panelAlt }}>{['Date', 'Item', 'Qty', 'Rate', 'Vendor', 'Invoice', 'Order'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
+                <thead><tr style={{ background: C.panelAlt }}>{['GRN', 'Date', 'Item', 'Qty', 'Rate', 'Vendor', 'Invoice', 'Order'].map(h => <th key={h} style={invTh}>{h}</th>)}</tr></thead>
                 <tbody>{receipts.slice().sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 8).map(r => {
                   const it = itemById[r.itemId] || {};
                   return (
                     <tr key={r.id} style={{ borderTop: '1px solid ' + C.borderSoft }}>
+                      <td className="font-mono" style={{ padding: '8px 12px', color: C.copper }}>{(grnGroups.find(g => g.rows.some(x => x.id === r.id)) || {}).grnNo || '\u2014'}</td>
                       <td style={{ padding: '8px 12px', color: C.subtext }}>{r.date}</td>
                       <td style={{ padding: '8px 12px', fontWeight: 600 }}>{it.name || 'Deleted item'}</td>
                       <td className="font-mono" style={{ padding: '8px 12px' }}>{conQty(r.qty)} {it.uom}</td>
@@ -17013,6 +17869,8 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
           )}
         </Card>
       )}
+
+      {sub === 'grn' && <StGrnRegister groups={grnGroups} itemById={itemById} acts={acts} user={user} setNote={setNote} />}
 
       {sub === 'prices' && (
         <Card style={{ padding: 0, overflow: 'hidden' }}>
@@ -17054,9 +17912,19 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
         </Card>
       )}
 
+      {editPo && <StPoEditModal po={editPo} items={allItems} itemById={itemById} onClose={() => setEditPo(null)} onSave={(d) => { const r = acts.editPo(editPo.id, d); if (!r.ok) return r.text; setEditPo(null); setNote({ ok: true, text: r.text }); return ''; }} />}
+      {delPo && <StConfirm title={'Delete ' + delPo.poNumber} danger confirmLabel="Delete PO" onClose={() => setDelPo(null)} onConfirm={() => { const r = acts.deletePo(delPo.id); setDelPo(null); setNote({ ok: r.ok, text: r.text }); }}>
+        Delete purchase order <strong>{delPo.poNumber}</strong> ({delPo.vendor})?{receipts.some(r => r.poNumber === delPo.poNumber) ? ' Goods already received against it stay in the GRN Register and in stock; delete those GRNs separately if they are wrong.' : ''}{delPo.prNumber ? ' Requisition ' + delPo.prNumber + ' goes back to Open.' : ''}</StConfirm>}
       {form && (
         <ConModal title="Create Purchase Order" onClose={() => setForm(false)} width={760}
-          footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }}>{err}</span><span style={{ fontSize: 13, fontWeight: 700 }}>Total {conRs(poTotal)}</span><button type="button" style={invBtn} onClick={createPo} data-testid="cp-save">Create</button><button type="button" style={invBtnGhost} onClick={() => setForm(false)}>Cancel</button></>}>
+          footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }}>{err}</span><span style={{ fontSize: 12.5, color: C.subtext }}>Taxable {conRs(poTotal)} + GST {conRs(poGst)}</span><span style={{ fontSize: 13, fontWeight: 700 }}>Total {conRs(poTotal + poGst)}</span><button type="button" style={invBtn} onClick={createPo} data-testid="cp-save">Create</button><button type="button" style={invBtnGhost} onClick={() => { setForm(false); setPrLoaded(null); }}>Cancel</button></>}>
+          {prs.some(p => p.status === 'Open') && (
+            <div style={{ marginBottom: 12 }}><label style={{ display: 'block', fontSize: 11.5, color: C.subtext, marginBottom: 3 }}>Start from a purchase requisition</label>
+              <select value={prLoaded ? prLoaded.prNumber : ''} data-testid="cp-pr" onChange={e => { const pr = prs.find(p => p.prNumber === e.target.value); if (pr) loadPr(pr); else { setPrLoaded(null); setFl([{ id: uid(), itemId: '', qty: '', rate: '' }]); } }} style={Object.assign({}, invInp, { minWidth: 280 })}>
+                <option value="">No requisition (enter items below)</option>
+                {prs.filter(p => p.status === 'Open').map(p => <option key={p.id} value={p.prNumber}>{p.prNumber + ' - ' + p.storeCategory + ' - ' + p.department + ' (' + (p.lines || []).length + ' items)'}</option>)}
+              </select></div>
+          )}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
             <div style={{ flex: '1 1 240px' }}><label style={{ display: 'block', fontSize: 11.5, color: C.subtext, marginBottom: 3 }}>Vendor *</label>
               <input list="con-vendors" value={vendor} onChange={e => setVendor(e.target.value)} data-testid="cp-vendor" style={Object.assign({}, invInp, { width: '100%' })} /></div>
@@ -17072,7 +17940,7 @@ function ConsumablesPurchaseTab({ user, setTab, initialSub, initialLate, rawItem
                   <input type="number" min="0" step="0.01" placeholder="Rate" value={l.rate} onChange={e => setF(i, { rate: e.target.value })} style={Object.assign({}, invInp, { width: 110 })} />
                   <button type="button" aria-label="Remove item" onClick={() => setFl(prev => prev.length > 1 ? prev.filter((_, j) => j !== i) : prev)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.subtext }}><X size={16} /></button>
                 </div>
-                {m && <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 2 }}>Stock {conQty(m.stock_qty)} {m.uom}{last ? ' - last paid ' + conRs(last, 2) : ' - catalog cost ' + conRs(m.unit_cost, 2)}</div>}
+                {m && <div style={{ fontSize: 11.5, color: C.subtext, marginTop: 2 }}>{m.sku ? m.sku + ' | ' : ''}HSN {m.hsn || '\u2014'} | GST {Number(m.gst_pct) || 0}% | UOM {m.uom} | Stock {conQty(m.stock_qty)}{last ? ' - last paid ' + conRs(last, 2) : ' - catalog cost ' + conRs(m.unit_cost, 2)}</div>}
               </div>
             );
           })}
@@ -17128,7 +17996,7 @@ function ConsumablesStoreTab({ user, setTab }) {
     if (!canPost) { setNote({ ok: false, text: 'Your role cannot create purchase orders.' }); return; }
     if (!poVendor.trim()) { setNote({ ok: false, text: 'Enter the vendor.' }); return; }
     const lastRate = (id) => { const r = receipts.filter(x => x.itemId === id).sort((a, b) => String(b.at).localeCompare(String(a.at)))[0]; return r ? r.rate : 0; };
-    const lines = sel.map(p => ({ id: uid(), itemId: p.m.id, qty: p.sug, rate: lastRate(p.m.id) || Number(p.m.unit_cost) || 0, received: 0 }));
+    const lines = sel.map(p => Object.assign({ id: uid(), itemId: p.m.id, qty: p.sug, rate: lastRate(p.m.id) || Number(p.m.unit_cost) || 0, received: 0 }, procLineSnap(p.m)));
     const maxLead = sel.reduce((t, p) => Math.max(t, p.lead), 7);
     const po = { id: uid(), poNumber: conNextPoNumber(pos), vendor: poVendor.trim(), date: todayKey(), deliveryDate: addDaysKey(todayKey(), maxLead), createdBy: (user && user.name) || '', status: 'Open', lines };
     setPos(prev => [po].concat(prev));
@@ -17674,10 +18542,16 @@ const SPACE_HUBS = {
     ] },
   ] },
   invhub: { label: 'Inventory Management', sections: [
+    { title: 'Inventory', tiles: [
+      { tab: 'invraw', title: 'Raw Material Inventory', sub: 'Stock, Reorder & Adjustments' },
+      { tab: 'invfin', title: 'Finished Goods Inventory', sub: 'Tubes in kg, Pallets & Boxes' },
+      { tab: 'stores', title: 'Stores & Master Store', sub: 'Consumables, Maintenance Spares & PR' },
+      { tab: 'inventory', title: 'Stock Overview', sub: 'Raw & Finished Goods' },
+    ] },
     { title: 'Consumables Cost Control', tiles: [
       { tab: 'concost', title: 'Consumables Cost Analysis', sub: 'Cost per kg & Savings' },
       { tab: 'conpurchase', title: 'Purchase & Goods Receipt', sub: 'Orders, Receiving & Prices' },
-      { tab: 'constore', title: 'Consumables Store', sub: 'Reorder, Issue & Losses' },
+      { tab: 'constore', title: 'Store Issue & Reorder', sub: 'Reorder, Issue & Losses' },
     ] },
     { title: 'Stock Management', tiles: [
       { tab: 'matdocs', title: 'Material Documents Overview' },
@@ -17686,7 +18560,6 @@ const SPACE_HUBS = {
     ] },
     { title: 'Stock Monitoring', tiles: [
       { tab: 'stocksingle', title: 'Stock', sub: 'Single Material' },
-      { tab: 'inventory', title: 'Stock', sub: 'Multiple Materials' },
       { tab: 'analyzestock', title: 'Analyze Stock in Date Range' },
       { tab: 'slowmoving', title: 'Slow or Non-Moving Materials' },
     ] },
@@ -17708,6 +18581,7 @@ const SPACE_HUBS = {
     { title: 'Maintenance & Tooling', tiles: [
       { tab: 'maintenance', title: 'Maintenance', sub: 'Breakdowns & Preventive Tasks' },
       { tab: 'tooling', title: 'Tooling & Dies', sub: 'Die Usage & Polishing' },
+      { tab: 'stores', title: 'Stores & Spares', sub: 'Maintenance Stock & Raise PR' },
       { tab: 'energy', title: 'Machine Energy', sub: 'Energy Tracking' },
     ] },
   ] },
@@ -17773,9 +18647,12 @@ const NAV_GROUPS = [
       { key: 'energy', label: 'Machine Energy', icon: Zap, roles: ['Admin', 'Manager', 'Assistant Manager', 'Production', 'Maintenance - Electrical'] },
       { key: 'skills', label: 'Skill Matrix', icon: GraduationCap },
       { key: 'kaizen', label: 'Kaizen', icon: Lightbulb },
+      { key: 'stores', label: 'Stores & Master Store', icon: Boxes, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager', 'Production', 'Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room'] },
       { key: 'inventory', label: 'Inventory', icon: Boxes },
       { key: 'cyclecount', label: 'Cycle Count', icon: ScanLine, roles: ['Admin', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Owner'] },
       { key: 'matdocs', label: 'Material Documents', icon: FileSpreadsheet },
+      { key: 'invraw', label: 'Raw Material Inventory', icon: Boxes, hidden: true },
+      { key: 'invfin', label: 'Finished Goods Inventory', icon: Package, hidden: true },
       { key: 'migo', label: 'Goods Receipt Purchase Order', icon: Package, hidden: true },
       { key: 'stocksingle', label: 'Stock - Single Material', icon: Activity, hidden: true },
       { key: 'deadstock', label: 'Dead Stock Analysis', icon: Layers, hidden: true },
@@ -17785,7 +18662,7 @@ const NAV_GROUPS = [
       { key: 'matprices', label: 'Material Prices', icon: Scale, hidden: true },
       { key: 'overduepo', label: 'Overdue Materials - Stock in Transit', icon: Clock, hidden: true },
       { key: 'conpurchase', label: 'Purchase & Goods Receipt', icon: ClipboardList, hidden: true, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager'] },
-      { key: 'constore', label: 'Consumables Store', icon: Boxes, hidden: true, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager'] },
+      { key: 'constore', label: 'Store Issue & Reorder', icon: Boxes, hidden: true, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager'] },
       { key: 'concost', label: 'Consumables Cost Analysis', icon: TrendingUp, hidden: true, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager'] },
     ],
   },
@@ -17815,6 +18692,8 @@ const NAV = NAV_GROUPS.flatMap(g => g.items).concat(Object.entries(SPACE_HUBS).m
    ========================================================================= */
 const ACCESS = { overrides: {} };
 const ADMIN_FIXED_TABS = true;   // the Admin always keeps every tab (so it can never be locked out of Master / Access)
+const rStoreMgr = (r) => ['Store', 'RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager'].includes(r);
+const rMaintStore = (r) => ['Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room'].includes(r);
 const rMach = (r) => r === 'Machine Supervisor' || isProductionManager(r) || isManagerRole(r);
 const ACTION_FEATURES = [
   { key: 'orders.add', group: 'Orders & dispatch', label: 'Add and delete orders', rule: r => r === 'Sales' || r === 'Admin' },
@@ -17828,6 +18707,19 @@ const ACTION_FEATURES = [
   { key: 'inventory.import', group: 'Inventory', label: 'Import finished-goods inventory from Excel', rule: r => ['Store', 'RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
   { key: 'stock.count', group: 'Inventory', label: 'Run cycle counts (scan labels and count stock)', rule: r => ['Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
   { key: 'stock.approve', group: 'Inventory', label: 'Approve cycle-count differences (posts to inventory)', rule: r => ['RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager'].includes(r) },
+  { key: 'store.cons.view', group: 'Stores & Procurement', label: 'See the Consumables & Others store', rule: r => rStoreMgr(r) || ['Owner', 'PPC Manager', 'Production'].includes(r) },
+  { key: 'store.maint.view', group: 'Stores & Procurement', label: 'See stock levels in the Maintenance & Projects store', rule: r => rStoreMgr(r) || rMaintStore(r) || ['Owner', 'PPC Manager'].includes(r) },
+  { key: 'masterstore.view', group: 'Stores & Procurement', label: 'Open the Master Store (item catalog)', rule: r => rStoreMgr(r) || ['Owner', 'PPC Manager'].includes(r) },
+  { key: 'masterstore.manage', group: 'Stores & Procurement', label: 'Add and edit Master Store items and the HSN table', rule: r => rStoreMgr(r) },
+  { key: 'masterstore.delete', group: 'Stores & Procurement', label: 'Delete Master Store items', rule: r => r === 'Admin' },
+  { key: 'proc.pr.view', group: 'Stores & Procurement', label: 'See purchase requisitions (PR)', rule: r => rStoreMgr(r) || rMaintStore(r) || ['Owner', 'PPC Manager', 'Production'].includes(r) },
+  { key: 'proc.pr.create', group: 'Stores & Procurement', label: 'Raise a purchase requisition (PR)', rule: r => rStoreMgr(r) || rMaintStore(r) || ['PPC Manager', 'Production'].includes(r) },
+  { key: 'proc.pr.edit', group: 'Stores & Procurement', label: 'PR: edit or reject', rule: r => rStoreMgr(r) },
+  { key: 'proc.pr.delete', group: 'Stores & Procurement', label: 'PR: delete', rule: r => r === 'Admin' },
+  { key: 'proc.po.edit', group: 'Stores & Procurement', label: 'PO (purchase order): edit', rule: r => ['Admin', 'Manager', 'Assistant Manager', 'RM & Supply Chain Manager'].includes(r) },
+  { key: 'proc.po.delete', group: 'Stores & Procurement', label: 'PO (purchase order): delete (the Admin can always delete)', rule: r => r === 'Admin' },
+  { key: 'proc.grn.edit', group: 'Stores & Procurement', label: 'GRN (goods receipt note): edit', rule: r => rStoreMgr(r) },
+  { key: 'proc.grn.delete', group: 'Stores & Procurement', label: 'GRN (goods receipt note): delete (the Admin can always delete)', rule: r => r === 'Admin' },
   { key: 'melting.cast', group: 'Planning & production', label: 'Cast a heat and edit shells', rule: r => r === 'Melting Supervisor' || isProductionManager(r) || isManagerRole(r) },
   { key: 'cascade.act', group: 'Planning & production', label: 'Finish baskets at Cascade', rule: r => r === 'Cascade Operator' || isProductionManager(r) || isManagerRole(r) },
   { key: 'spinner.act', group: 'Planning & production', label: 'Request baskets and run the Spinner gate', rule: r => r === 'Spinner Supervisor' || isProductionManager(r) || isManagerRole(r) },
@@ -18328,9 +19220,9 @@ function Shell({
     { key: 'hub_qm', label: 'Neel : QM Apps', match: ['hub_qm', 'quality', 'qchold', 'qmlots', 'lab', 'spc', 'capa'] },
     { key: 'hub_sd', label: 'Neel : SD Apps', match: ['hub_sd', 'orders'] },
     { key: 'hub_ship', label: 'Shipping', match: ['hub_ship', 'dispatch'] },
-    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock', 'purchaseorders', 'matprices', 'overduepo', 'conpurchase', 'constore', 'concost'] },
+    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'invraw', 'invfin', 'stores', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock', 'purchaseorders', 'matprices', 'overduepo', 'conpurchase', 'constore', 'concost'] },
     { key: 'hub_prod', label: 'Production & Shop Floor', match: ['hub_prod', 'plan', 'stages', 'floor', 'dpr', 'schedule'] },
-    { key: 'hub_maint', label: 'Maintenance & Tooling', match: ['hub_maint', 'maintenance', 'tooling', 'energy'] },
+    { key: 'hub_maint', label: 'Maintenance & Tooling', match: ['hub_maint', 'maintenance', 'tooling', 'stores', 'energy'] },
     ...(canSeeTab(user, 'master') ? [{ key: 'hub_admin', label: 'Administration', match: ['hub_admin', 'master', 'team', 'cost', 'reports', 'audit', 'trends', 'skills', 'kaizen'] }] : []),
   ].filter(s => canSeeTab(user, s.key));
 
@@ -21026,13 +21918,16 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
             onPostDelivery={postDelivery} onDecision={setDispatchDecision} onSetReason={setDispatchReason} />}
           {tab === 'cost' && <CostOfProductionTab costData={costData} onUpdateMonth={updateCostMonth} batches={batches} dprEntries={dprEntries} machineProd={machineProd} settings={settings} user={user} charges={annealCharges} onUpdateSettings={updateSettings} />}
           {tab === 'inventory' && <><InventoryTab batches={batches} rawItems={rawItems} finishedItems={finishedItems} onAddRaw={addRaw} onAdjustRaw={adjustRaw} onDeleteRaw={deleteRaw} onAddFinished={addFinished} onAddFinishedBatch={addFinishedBatch} onAdjustFinished={adjustFinished} onDeleteFinished={deleteFinished} onSetFinishedCategory={setFinishedCategory} onSetRawKind={setRawKind} rawConsumption={rawConsumption} user={user} /><RawMaterialRequestsPanel orders={orders} rawItems={rawItems} user={user} /></>}
+          {tab === 'invraw' && <><InventoryTab section="raw" batches={batches} rawItems={rawItems} finishedItems={finishedItems} onAddRaw={addRaw} onAdjustRaw={adjustRaw} onDeleteRaw={deleteRaw} onAddFinished={addFinished} onAddFinishedBatch={addFinishedBatch} onAdjustFinished={adjustFinished} onDeleteFinished={deleteFinished} onSetFinishedCategory={setFinishedCategory} onSetRawKind={setRawKind} rawConsumption={rawConsumption} user={user} /><RawMaterialRequestsPanel orders={orders} rawItems={rawItems} user={user} /></>}
+          {tab === 'invfin' && <InventoryTab section="fin" batches={batches} rawItems={rawItems} finishedItems={finishedItems} onAddRaw={addRaw} onAdjustRaw={adjustRaw} onDeleteRaw={deleteRaw} onAddFinished={addFinished} onAddFinishedBatch={addFinishedBatch} onAdjustFinished={adjustFinished} onDeleteFinished={deleteFinished} onSetFinishedCategory={setFinishedCategory} onSetRawKind={setRawKind} rawConsumption={rawConsumption} user={user} />}
+          {tab === 'stores' && <StoresHub user={user} setTab={setTab} />}
           {tab === 'bomMrp' && <BomMrpTab bom={bom} onAddBom={addBom} onDeleteBom={deleteBom} orders={orders} rawItems={rawItems} batches={batches} settings={settings} user={user} />}
           {tab === 'skills' && <SkillMatrixTab skillMatrix={skillMatrix} onUpdateLevel={updateSkillLevel} onRemovePerson={removeSkillPerson} user={user} />}
           {tab === 'cyclecount' && canSeeTab(user, 'cyclecount') && <CycleCountTab sessions={cycleCounts} rawItems={rawItems} finishedItems={finishedItems} onStart={startCycleCount} onSaveLine={saveCountLine} onRemoveLine={removeCountLine} onSubmit={submitCount} onDecide={decideCountLine} onClose={closeCount} onCancel={cancelCount} user={user} />}
           {tab === 'lab' && canSeeTab(user, 'lab') && <LabTab heats={heats} batches={batches} labResults={labResults} onAdd={addLabResult} onDelete={deleteLabResult} user={user} />}
           {tab === 'reports' && canSeeTab(user, 'reports') && <ReportsTab user={user} />}
           {tab === 'audit' && canSeeTab(user, 'audit') && <AuditTab user={user} />}
-          {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} onDeleteDie={deleteDie} user={user} />}
+          {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} onDeleteDie={deleteDie} user={user} setTab={setTab} />}
           {tab === 'energy' && <EnergyTrackingTab energyLogs={energyLogs} onLogMachineEnergy={logMachineEnergy} customEnergyMachines={settings.customEnergyMachines || []} onAddEnergyMachine={(m) => updateSettings({ customEnergyMachines: [...(settings.customEnergyMachines || []), m] })} onRemoveEnergyMachine={(id) => updateSettings({ customEnergyMachines: (settings.customEnergyMachines || []).filter(x => x.id !== id) })} user={user} />}
           {tab === 'kaizen' && <KaizenTab kaizenIdeas={kaizenIdeas} onAdd={addKaizen} onUpdateStatus={updateKaizenStatus} onDelete={deleteKaizen} user={user} />}
           {tab === 'dpr' && <DprTab dprEntries={dprEntries} onUpdateDpr={updateDprEntry}

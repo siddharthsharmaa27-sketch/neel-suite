@@ -21,6 +21,8 @@ const PATCHES = [
   { file: 'patch-tooling.cjs', marker: 'NEEL_TOOLING_V1', what: 'Tooling: delete tool, edit catalog, auto packaging', needs: [] },
   { file: 'patch-consumables.cjs', marker: 'function ConsumablesPurchaseTab(', what: 'Consumables purchase, store and cost analysis', needs: ['patch-inventory.cjs', 'patch-hubs.cjs'] },
   { file: 'patch-home-customers.cjs', marker: 'NEEL_HOME_V1', what: 'Home for every login, Recap, new Customer master', needs: ['patch-neel.cjs', 'patch-hubs.cjs', 'patch-phase3.cjs'] },
+  { file: 'patch-stock-views.cjs', marker: 'NEEL_STOCK_VIEWS_V1', what: 'Raw Material, Finished Goods and Consumables Inventory tiles', needs: ['patch-hubs.cjs', 'patch-consumables.cjs'] },
+  { file: 'patch-whatsapp.cjs', marker: 'NEEL_WHATSAPP_V1', what: 'WhatsApp group alerts (safe bot + settings page)', needs: ['patch-inventory.cjs', 'patch-hubs.cjs', 'patch-consumables.cjs'] },
   { file: 'patch-unify.cjs', marker: 'NEEL_UNIFY_V1', what: 'One Purchase & Goods Receipt screen, one dead/slow stock report', needs: ['patch-inventory.cjs', 'patch-hubs.cjs', 'patch-phase3.cjs', 'patch-consumables.cjs'] },
 ];
 const done = {};
