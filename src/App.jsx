@@ -826,8 +826,8 @@ function canResolveMaintenance(role) { return canDo(role, 'maintenance.signoff')
 // (same as the rest of the app's data), filtered to whichever roles a
 // notification was aimed at. Good enough for "the electrician sees a
 // breakdown was logged next time they open the app", which is what's needed.
-function pushNotification(list, { message, targetRoles }) {
-  const entry = { id: uid(), message, targetRoles, createdAt: new Date().toISOString(), readBy: [] };
+function pushNotification(list, { message, targetRoles, type }) {
+  const entry = { id: uid(), message, targetRoles, type: type || '', createdAt: new Date().toISOString(), readBy: [] };
   return [entry, ...(list || [])].slice(0, 200);
 }
 function isNotificationUnread(n, user) {
@@ -838,6 +838,27 @@ function isNotificationUnread(n, user) {
 function isNotificationForUser(n, user) {
   if (!user) return false;
   return (n.targetRoles || []).includes(user.role) || (n.targetRoles || []).includes('All');
+}
+// Which screen a notification opens when it is clicked. New notifications carry their type; older ones are matched from the message text.
+const NOTIFICATION_TABS = {
+  plan_released: 'plan', rework: 'stages', ready_for_spinner: 'floor', spinner_basket_request: 'floor', ready_for_annealing: 'floor', ready_for_packing: 'floor',
+  pull_request: 'floor', lwc_hold: 'qchold', lwc_hold_released: 'qchold', lwc_rejected: 'qchold', lwc_downsizing: 'qchold', awaiting_quality: 'qmlots',
+  released_for_dispatch: 'dispatch', delivery: 'dispatch', heat_cast: 'stages', new_order: 'orders', breakdown: 'maintenance',
+};
+function notificationTab(n) {
+  if (!n) return '';
+  if (n.tab) return n.tab;
+  if (n.type) return NOTIFICATION_TABS[n.type] || (String(n.type).indexOf('downsized_to_') === 0 ? 'stages' : '');
+  const m = String(n.message || '');
+  if (/^Production plan/i.test(m)) return 'plan';
+  if (/put on hold|quality hold|REJECTED at LWC|downsizing/i.test(m)) return 'qchold';
+  if (/inspection lot/i.test(m)) return 'qmlots';
+  if (/released for dispatch|dispatched to/i.test(m)) return 'dispatch';
+  if (/Heat cast|rework/i.test(m)) return 'stages';
+  if (/requested basket|requesting|ready to be requested|ready for (annealing|packing)|out of annealing/i.test(m)) return 'floor';
+  if (/^Breakdown/i.test(m)) return 'maintenance';
+  if (/^New .* order/i.test(m)) return 'orders';
+  return '';
 }
 
 const SHIFT_MINUTES = 480; // assumed single-shift length, used only for the availability % estimate
@@ -4352,6 +4373,20 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachine
     return Array.from(map.values());
   }, [customEnergyMachines]);
 
+  // ---- readings already saved for the date chosen above (pre-filled in the boxes and listed in the table below) ----
+  const savedForDate = useMemo(() => {
+    const m = {};
+    (energyLogs || []).filter(l => l.date === selectedDate).forEach(l => { m[l.machineId] = l; });
+    return m;
+  }, [energyLogs, selectedDate]);
+  const previousReading = (machineId) => {
+    let best = null;
+    (energyLogs || []).forEach(l => { if (l.machineId === machineId && String(l.date) < String(selectedDate) && (!best || String(l.date) > String(best.date))) best = l; });
+    return best;
+  };
+  const fmtWhen = (iso) => { try { return iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '\u2014'; } catch (e) { return '\u2014'; } };
+  const savedCount = allEnergyMachines.filter(m => savedForDate[m.id]).length;
+
   const handleAddMachine = () => {
     setErr('');
     const id = newMachineId.trim().toUpperCase();
@@ -4441,7 +4476,7 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachine
                     <input
                       type="number"
                       placeholder="Enter kWh"
-                      value={readings[m.id] || ''}
+                      value={readings[m.id] !== undefined ? readings[m.id] : (savedForDate[m.id] ? String(savedForDate[m.id].kwh) : '')}
                       onChange={e => setReadings({ ...readings, [m.id]: e.target.value })}
                       style={{ width: 140, padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
                     />
@@ -4463,6 +4498,38 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachine
         {err && <span role="alert" style={{ color: C.red, fontSize: 13, fontWeight: 600 }}>{err}</span>}
         {msg && <span role="status" style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>{msg}</span>}
       </div>
+
+      <div style={{ marginTop: 24 }}>
+        <SectionTitle sub={savedCount + ' of ' + allEnergyMachines.length + ' machines have a saved reading for this date. To correct one, change its box above and save again.'}>{'Saved readings for ' + selectedDate}</SectionTitle>
+      </div>
+      <Card style={{ padding: 0, overflow: 'hidden', marginTop: 8 }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }} data-testid="energy-saved-table">
+            <thead>
+              <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
+                {['Machine', 'Process', 'Saved reading (kWh)', 'Previous reading', 'Used since previous (kWh)', 'Entered by', 'Entered at'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {allEnergyMachines.map(m => {
+                const saved = savedForDate[m.id]; const prev = previousReading(m.id);
+                const used = saved && prev ? Number(saved.kwh) - Number(prev.kwh) : null;
+                return (
+                  <tr key={m.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <td style={{ padding: '8px 14px' }}><span className="font-mono" style={{ fontWeight: 600, color: C.copperDark }}>{m.id}</span> <span style={{ color: C.subtext }}>{m.name}</span></td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{m.process}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', fontWeight: 700, color: saved ? C.ink : C.faint }}>{saved ? Number(saved.kwh).toLocaleString('en-IN') : 'Not entered'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', color: C.subtext }}>{prev ? Number(prev.kwh).toLocaleString('en-IN') + ' (' + prev.date + ')' : '\u2014'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', color: used !== null && used < 0 ? C.red : C.ink, fontWeight: used !== null && used < 0 ? 700 : 400 }}>{used === null ? '\u2014' : (used < 0 ? used.toLocaleString('en-IN') + ' (lower than previous, check the meter)' : used.toLocaleString('en-IN'))}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{saved ? (saved.loggedBy || '\u2014') : '\u2014'}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{saved ? fmtWhen(saved.loggedAt) : '\u2014'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -4938,7 +5005,7 @@ function AIDemandForecasting({ orders, onDraft }) {
 
 const DASHBOARD_WIDGETS = ['Demand AI', 'Scheduler', 'AI Predictor', 'Yield & Loss', 'Reject Pareto', 'Sales', 'Floor Map', 'Passports', 'OEE', 'Energy', 'Tooling'];
 
-function CommandCenter({ activeWidgets, toggleWidget, alerts, onReset }) {
+function CommandCenter({ activeWidgets, toggleWidget, alerts, onReset, canWidget }) {
   const predictiveAlerts = alerts || [];
 
   return (
@@ -4970,7 +5037,7 @@ function CommandCenter({ activeWidgets, toggleWidget, alerts, onReset }) {
         <SectionTitle sub="Build your own workspace. Modules snap to grid automatically.">Personal Command Center</SectionTitle>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, flexWrap: 'wrap' }}>
           <LayoutGrid size={16} color={C.subtext} /> Customize Layout:
-          {DASHBOARD_WIDGETS.map(widget => (
+          {DASHBOARD_WIDGETS.filter(w => !canWidget || canWidget(w)).map(widget => (
             <label key={widget} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', background: activeWidgets.includes(widget) ? C.blueSoft : C.panelAlt, padding: '4px 8px', borderRadius: 4, border: `1px solid ${activeWidgets.includes(widget) ? C.blue : C.border}` }}>
               <input type="checkbox" checked={activeWidgets.includes(widget)} onChange={() => toggleWidget(widget)} style={{ display: 'none' }} />
               <span style={{ color: activeWidgets.includes(widget) ? C.blue : C.subtext, fontWeight: 600 }}>{widget}</span>
@@ -5181,7 +5248,27 @@ const REPORTS = [
   { id: 'tooling', group: 'Maintenance', title: 'Tooling register', desc: 'Dies and plugs with meters drawn, wear limit and remaining life.',
     build: (c) => ({ 'Tooling': (c.toolingItems || []).map(d => ({ Type: d.type || 'Die', 'Tool ID': d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit (m)': d.limitMeters, 'Remaining (m)': Math.max(0, d.limitMeters - d.usageMeters), 'Used %': d.limitMeters > 0 ? Math.round((d.usageMeters / d.limitMeters) * 100) : '', Status: d.status === 'Polishing' ? 'Sent for polishing' : d.usageMeters >= d.limitMeters * 0.9 ? 'Needs polish' : 'Active' })) }) },
   { id: 'energy', group: 'Maintenance', title: 'Machine energy', desc: 'Every kWh meter reading entered per machine.',
-    build: (c, rg) => ({ 'Energy readings': (c.energyLogs || []).filter(e => inRangeDay(e.date, rg)).map(e => flatRow(e)) }) },
+    build: (c, rg) => {
+      // Sheet 1: one ROW per machine per date, newest date first. Sheet 2: one ROW per machine with a column for each date.
+      const info = {}; ENERGY_MACHINES.concat(c.customEnergyMachines || []).forEach(m => { info[m.id] = m; });
+      const all = (c.energyLogs || []).slice().sort((a, b) => String(a.machineId).localeCompare(String(b.machineId)) || String(a.date).localeCompare(String(b.date)));
+      const prev = {}, used = {};
+      all.forEach(l => { const p = prev[l.machineId]; used[l.machineId + '|' + l.date] = p === undefined ? '' : Number(l.kwh) - p; prev[l.machineId] = Number(l.kwh); });
+      const when = (iso) => { try { return iso ? new Date(iso).toLocaleString('en-IN') : ''; } catch (e) { return ''; } };
+      const inRange = all.filter(e => inRangeDay(e.date, rg));
+      const rows = inRange.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(a.machineId).localeCompare(String(b.machineId))).map(l => ({
+        Date: l.date, 'Machine ID': l.machineId, 'Machine name': (info[l.machineId] || {}).name || '', Process: (info[l.machineId] || {}).process || '',
+        'Closing reading (kWh)': Number(l.kwh), 'Used since previous reading (kWh)': used[l.machineId + '|' + l.date], 'Entered by': l.loggedBy || '', 'Entered at': when(l.loggedAt),
+      }));
+      const dates = Array.from(new Set(inRange.map(l => l.date))).sort();
+      const machines = Array.from(new Set(inRange.map(l => l.machineId))).sort();
+      const matrix = machines.map(id => {
+        const row = { 'Machine ID': id, 'Machine name': (info[id] || {}).name || '', Process: (info[id] || {}).process || '' };
+        dates.forEach(d => { const hit = inRange.find(l => l.machineId === id && l.date === d); row[d] = hit ? Number(hit.kwh) : ''; });
+        return row;
+      });
+      return { 'Energy readings': rows, 'Machine x Date (kWh)': matrix };
+    } },
   { id: 'capa', group: 'Quality', title: 'CAPA register', desc: 'Corrective and preventive actions with status.',
     build: (c, rg) => ({ 'CAPA': (c.capaRecords || []).filter(x => inRangeIso(x.createdAt, rg)).map(x => flatRow(x)) }) },
   { id: 'dpr', group: 'Management', title: 'Daily production reports', desc: 'Saved shift reports (flattened — one row per saved report).',
@@ -6132,6 +6219,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
   const runIntervals = useMemo(() => machineRunIntervals(batches, reportCtx?.charges), [batches, reportCtx?.charges]);
   const maintAlerts = useMemo(() => computeMaintenanceAlerts(maintenanceLogs, pmTasks, Date.now(), runIntervals), [maintenanceLogs, pmTasks, runIntervals]);
   const toggleWidget = (w) => setActiveWidgets(prev => prev.includes(w) ? prev.filter(x => x !== w) : [...prev, w]);
+  const canWidget = (w) => !user || user.role === 'Admin' || canDo(user.role, 'home.w.' + w);   // Admin chooses per role in Master > Access
   const open = (t) => { if (canSeeTab(user, t)) setTab(t); };
   const link = (t) => (t && canSeeTab(user, t) ? t : undefined);
   const today = todayKey();
@@ -6252,20 +6340,20 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
         <Tile metric="ordersAttention" label="ORDERS NEEDING ATTENTION" value={attention.length} tab="orders" tone={attention.length ? C.red : C.ink} sub={`overdue or due within ${APP_CONFIG.dueSoonDays} day${APP_CONFIG.dueSoonDays === 1 ? '' : 's'}`} />
       </div>
 {/* --- COMMAND CENTER & CUSTOMIZABLE WIDGET GRID --- */}
-      <CommandCenter activeWidgets={activeWidgets} toggleWidget={toggleWidget} alerts={maintAlerts} onReset={() => setActiveWidgets(DEFAULT_WIDGETS)} />
+      <CommandCenter activeWidgets={activeWidgets} toggleWidget={toggleWidget} alerts={maintAlerts} canWidget={canWidget} onReset={() => setActiveWidgets(DEFAULT_WIDGETS)} />
       {/* minmax(320px) fits more widgets per row on most screens; alignItems:'start' stops short widgets stretching to match tall ones */}
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', alignItems: 'start', marginBottom: 18 }}>
-        {activeWidgets.includes('Demand AI') && <AIDemandForecasting orders={orders} onDraft={() => setActiveWidgets(p => p.includes('Sales') ? p : [...p, 'Sales'])} />}
-        {activeWidgets.includes('Scheduler') && <DynamicScheduler spinnerPlans={spinnerPlans} maintenanceLogs={maintenanceLogs} capacities={capacities} onOpenPlan={() => open('plan')} />}
-        {activeWidgets.includes('AI Predictor') && <PredictiveIntelligence setTab={setTab} activeWidgets={activeWidgets} onShowWidget={(w) => setActiveWidgets(p => p.includes(w) ? p : [...p, w])} />}
-        {activeWidgets.includes('Sales') && <SalesQuotationEngine settings={settings} user={user} />}
-        {activeWidgets.includes('Floor Map') && <StrategicFloorMap furnaces={furnaces} maintenanceLogs={maintenanceLogs} />}
-        {activeWidgets.includes('Passports') && <DigitalProductPassport batches={batches} heats={heats} energyLogs={energyLogs} />}
-        {activeWidgets.includes('OEE') && <OEEDashboard downtimeLogs={maintenanceLogs} planRows={[]} summary={oeeToday} />}
-        {activeWidgets.includes('Yield & Loss') && <YieldLossWidget batches={batches} />}
-        {activeWidgets.includes('Reject Pareto') && <RejectParetoWidget batches={batches} />}
-        {activeWidgets.includes('Energy') && <EnergySummaryWidget energyLogs={energyLogs} batches={batches} onOpen={() => setTab('energy')} />}
-        {activeWidgets.includes('Tooling') && <ToolingManagement toolingData={toolingItems || []} />}
+        {activeWidgets.includes('Demand AI') && canWidget('Demand AI') && <AIDemandForecasting orders={orders} onDraft={() => setActiveWidgets(p => p.includes('Sales') ? p : [...p, 'Sales'])} />}
+        {activeWidgets.includes('Scheduler') && canWidget('Scheduler') && <DynamicScheduler spinnerPlans={spinnerPlans} maintenanceLogs={maintenanceLogs} capacities={capacities} onOpenPlan={() => open('plan')} />}
+        {activeWidgets.includes('AI Predictor') && canWidget('AI Predictor') && <PredictiveIntelligence setTab={setTab} activeWidgets={activeWidgets} onShowWidget={(w) => setActiveWidgets(p => p.includes(w) ? p : [...p, w])} />}
+        {activeWidgets.includes('Sales') && canWidget('Sales') && <SalesQuotationEngine settings={settings} user={user} />}
+        {activeWidgets.includes('Floor Map') && canWidget('Floor Map') && <StrategicFloorMap furnaces={furnaces} maintenanceLogs={maintenanceLogs} />}
+        {activeWidgets.includes('Passports') && canWidget('Passports') && <DigitalProductPassport batches={batches} heats={heats} energyLogs={energyLogs} />}
+        {activeWidgets.includes('OEE') && canWidget('OEE') && <OEEDashboard downtimeLogs={maintenanceLogs} planRows={[]} summary={oeeToday} />}
+        {activeWidgets.includes('Yield & Loss') && canWidget('Yield & Loss') && <YieldLossWidget batches={batches} />}
+        {activeWidgets.includes('Reject Pareto') && canWidget('Reject Pareto') && <RejectParetoWidget batches={batches} />}
+        {activeWidgets.includes('Energy') && canWidget('Energy') && <EnergySummaryWidget energyLogs={energyLogs} batches={batches} onOpen={() => setTab('energy')} />}
+        {activeWidgets.includes('Tooling') && canWidget('Tooling') && <ToolingManagement toolingData={toolingItems || []} />}
       </div>
       <ExecutiveRMOverview rawItems={rawItems} user={user} setTab={setTab} />
 
@@ -13707,13 +13795,17 @@ function HorizonMyHome({
 }
 
 function HomePage(props) {
+  // The Admin decides who sees the Insights Tiles and the coil quality panel (Master > Access > Visibility). The Admin always sees both.
+  const role = props.user && props.user.role;
+  const showInsights = role === 'Admin' || canDo(role, 'home.insights');
+  const showCoil = role === 'Admin' || canDo(role, 'home.coilquality');
   return (
     <div>
       <HorizonMyHome {...props} />
-      <SectionTitle sub={`${PLANT_NAME} · Plant ${PLANT_CODE} · live executive insights`}>Insights Tiles</SectionTitle>
+      {showInsights && <SectionTitle sub={`${PLANT_NAME} · Plant ${PLANT_CODE} · live executive insights`}>Insights Tiles</SectionTitle>}
       <AdminClearData user={props.user} onClear={props.onClearAll} />
-      <ExecutiveDashboard {...props} />
-      <CoilQualityPanel batches={props.batches} setTab={props.setTab} />
+      {showInsights && <ExecutiveDashboard {...props} />}
+      {showCoil && <CoilQualityPanel batches={props.batches} setTab={props.setTab} />}
     </div>
   );
 }
@@ -18736,6 +18828,9 @@ const ACTION_FEATURES = [
   { key: 'rework.act', group: 'Quality', label: 'Send a lot for rework at Planetary Rolling', rule: r => isProductionManager(r) || r === 'Quality' || isManagerRole(r) },
   { key: 'maintenance.signoff', group: 'Maintenance', label: 'Sign off (resolve) breakdowns', rule: r => MAINTENANCE_SIGNOFF_ROLES.includes(r) },
   { key: 'cost.view', group: 'Cost', label: 'See cost figures (dashboard and Cost of Production)', rule: r => isManagerRole(r) || r === 'Owner' },
+  { key: 'home.insights', group: 'Visibility', label: 'Home: see the Insights Tiles (Control Tower, plant KPIs, widgets)', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
+  { key: 'home.coilquality', group: 'Visibility', label: 'Home: see the coil quality panel', rule: r => ['Quality', 'Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
+  ...DASHBOARD_WIDGETS.map(w => ({ key: 'home.w.' + w, group: 'Visibility', label: 'Home widget: ' + w, rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) || (w === 'Sales' && r === 'Sales') })),
   { key: 'customer.see', group: 'Visibility', label: 'See which customer an order is for', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner', 'Sales', 'Dispatch'].includes(r) },
   { key: 'master.add', group: 'Visibility', label: 'Add new customers, sizes and other values to Master from a form', rule: r => ['Sales', 'Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin'].includes(r) },
 ];
@@ -19130,7 +19225,7 @@ function CommandPalette({ onNavigate, onClose, items }) {
 /* =========================================================================
    NOTIFICATION BELL
    ========================================================================= */
-function NotificationBell({ notifications, user, onMarkRead }) {
+function NotificationBell({ notifications, user, onMarkRead, onOpen }) {
   const [open, setOpen] = useState(false);
   const mine = (notifications || []).filter(n => isNotificationForUser(n, user));
   const unreadCount = mine.filter(n => isNotificationUnread(n, user)).length;
@@ -19138,6 +19233,13 @@ function NotificationBell({ notifications, user, onMarkRead }) {
   const markAllRead = () => {
     const unreadIds = mine.filter(n => isNotificationUnread(n, user)).map(n => n.id);
     if (unreadIds.length) onMarkRead(unreadIds);
+  };
+  // clicking a notification marks it read and opens the screen it is about (when this person is allowed to see that screen)
+  const openNotification = (n) => {
+    if (isNotificationUnread(n, user)) onMarkRead([n.id]);
+    const t = notificationTab(n);
+    setOpen(false);
+    if (t && onOpen && canSeeTab(user, t)) onOpen(t);
   };
 
   return (
@@ -19168,13 +19270,14 @@ function NotificationBell({ notifications, user, onMarkRead }) {
             <div style={{ padding: 20 }}><EmptyState title="Nothing yet." /></div>
           ) : (
             mine.slice(0, 40).map(n => (
-              <div key={n.id} style={{
+              <button type="button" key={n.id} onClick={() => openNotification(n)} data-testid="notification-item" title={notificationTab(n) && canSeeTab(user, notificationTab(n)) ? 'Open' : 'Mark as read'} style={{
+                display: 'block', width: '100%', textAlign: 'left', font: 'inherit', cursor: 'pointer', border: 'none',
                 padding: '10px 14px', borderBottom: `1px solid ${C.borderSoft}`,
                 background: isNotificationUnread(n, user) ? C.copperFaint : 'transparent',
               }}>
                 <p style={{ fontSize: 12.5, color: C.ink, margin: 0 }}>{n.message}</p>
-                <p style={{ fontSize: 11, color: C.faint, margin: '4px 0 0' }}>{timeAgo(new Date(n.createdAt))}</p>
-              </div>
+                <p style={{ fontSize: 11, color: C.faint, margin: '4px 0 0' }}>{timeAgo(new Date(n.createdAt))}{notificationTab(n) && canSeeTab(user, notificationTab(n)) ? ' \u00b7 click to open' : ''}</p>
+              </button>
             ))
           )}
         </div>
@@ -19310,7 +19413,7 @@ function Shell({
             </span>
           )}
 
-          <NotificationBell notifications={notifications} user={user} onMarkRead={onMarkNotificationsRead} />
+          <NotificationBell notifications={notifications} user={user} onMarkRead={onMarkNotificationsRead} onOpen={setTab} />
 
           <button
             type="button"
@@ -20083,7 +20186,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     groups.forEach((rs, see) => notifyRoles(rs, make(see), type, payload));
   };
   const notifyRoles = (targetRoles, message, type, payload) => {
-    const next = pushNotification(notificationsRef.current, { message, targetRoles });
+    const next = pushNotification(notificationsRef.current, { message, targetRoles, type });
     notificationsRef.current = next;
     setNotifications(next);
     saveShared(KEYS.notifications, next);
@@ -20111,7 +20214,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     };
     commitOrders([...ordersRef.current, order]);
     const msg = `New ${order.productType} order ${order.orderNo} (SO ${salesOrderNo}): ${order.customer}, ${order.location} — ${orderTitle(order)}, ${Number(order.qty).toLocaleString()} ${order.unit}, delivery ${order.dueDate}. Booked by ${order.salesperson}.`;
-    setNotifications(prev => { const next = pushNotification(prev, { message: msg, targetRoles: ['Production', 'Packing', 'Dispatch'] }); saveShared(KEYS.notifications, next); return next; });
+    setNotifications(prev => { const next = pushNotification(prev, { message: msg, targetRoles: ['Production', 'Packing', 'Dispatch'], type: 'new_order' }); saveShared(KEYS.notifications, next); return next; });
     supabaseNotify({ type: 'new_order', targetDepartment: 'Production,Packing,Dispatch', message: msg, payload: order, createdBy: order.salesperson });
     syncOrderTracking(order);
     logAudit({ actor: user.name, action: 'create', entityType: 'order', entityId: order.id, details: { orderNo: order.orderNo, customer: order.customer, qty: order.qty, unit: order.unit } });
@@ -20156,7 +20259,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       resolvedAt: null, resolutionNotes: '', delayReason: '' };
     setMaintenanceLogs(prev => { const next = [entry, ...prev]; saveShared(KEYS.maintenance, next); return next; });
     const msg = `Breakdown on ${f.machineId} (${f.department}): ${f.description}. Reported by ${user.name}.`;
-    setNotifications(prev => { const next = pushNotification(prev, { message: msg, targetRoles: [maintenanceRoleForDept(f.department), 'Admin'] }); saveShared(KEYS.notifications, next); return next; });
+    setNotifications(prev => { const next = pushNotification(prev, { message: msg, targetRoles: [maintenanceRoleForDept(f.department), 'Admin'], type: 'breakdown' }); saveShared(KEYS.notifications, next); return next; });
     supabaseNotify({ type: 'breakdown', targetDepartment: f.department, message: msg, payload: entry, createdBy: user.name });
   };
   const setMaintenanceInProgress = (id) => setMaintenanceLogs(prev => {
@@ -21863,7 +21966,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       ) : (
         <BatchIndexCtx.Provider value={batchIndex}>
         <MasterDataCtx.Provider value={{ customers: master.customers || [], sizes: master.sizes || [], standards: master.standards || [], standardRequired: master.standardRequired || {}, toleranceLocked: master.toleranceLocked || {}, potCapacityKg: settingValue(settings, 'potCapacityKg'), capacities: master.capacities || {}, shiftDayStart: settingValue(settings, 'shiftDayStart'), shiftNightStart: settingValue(settings, 'shiftNightStart'), orderListClosestFirst: settingValue(settings, 'orderListClosestFirst'), seeCustomer: canDo(user.role, 'customer.see'), specs: (master.lists || {}).specifications?.items || [], canAdd: canDo(user.role, 'master.add'), save: addMasterFromForm }}>
-        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, labResults, pmTasks, cycleCounts, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, capaRecords, dprEntries, machineProd, spinnerPlans, processPlans, dprClosed }}>
+        <ReportCtx.Provider value={{ batches, heats, orders, deliveries, charges: annealCharges, labResults, pmTasks, cycleCounts, rawItems, finishedItems, maintenanceLogs, toolingItems, energyLogs, customEnergyMachines: settings.customEnergyMachines || [], capaRecords, dprEntries, machineProd, spinnerPlans, processPlans, dprClosed }}>
         {loadProblem > 0 && (
           <div role="alert" data-testid="load-problem-banner" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999, background: '#b3261e', color: '#fff', padding: '10px 16px', fontSize: 13.5, fontWeight: 600, textAlign: 'center' }}>
             Some data could not be loaded, so saving is paused to protect what is stored. Do not enter new data. Check your connection and refresh the page.
