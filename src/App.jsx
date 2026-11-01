@@ -157,9 +157,9 @@ const ALL_NEEL_APPS_CATALOG = [
   { id: 'fav-cycle', title: 'Cycle Count', sub: 'Physical Inventory Audit', tab: 'cyclecount', color: '#0070f2', category: 'Inventory Management' },
   { id: 'fav-outb', title: 'Display Outbound Delivery', sub: 'Dispatch & Challans', tab: 'dispatch', color: '#0070f2', category: 'Shipping & SD' },
   { id: 'fav-orders', title: 'Sales Orders', sub: 'Order Book & Tracking', tab: 'orders', color: '#0070f2', category: 'Shipping & SD' },
-  { id: 'fav-maint', title: 'My Maintenance Requests', sub: 'Breakdowns & PM', tab: 'maintenance', color: '#0070f2', category: 'Maintenance & Tooling' },
-  { id: 'fav-tool', title: 'Tooling & Die Life', sub: 'Die & Plug Register', tab: 'tooling', color: '#0070f2', category: 'Maintenance & Tooling' },
-  { id: 'fav-energy', title: 'Machine Energy', sub: 'kWh Utility Tracking', tab: 'energy', color: '#107e3e', category: 'Maintenance & Tooling' },
+  { id: 'fav-maint', title: 'My Maintenance Requests', sub: 'Breakdowns & PM', tab: 'maintenance', color: '#0070f2', category: 'Maintenance' },
+  { id: 'fav-tool', title: 'Tooling & Die Life', sub: 'Die & Plug Register', tab: 'tooling', color: '#0070f2', category: 'Inventory Management' },
+  { id: 'fav-energy', title: 'Machine Energy', sub: 'kWh Utility Tracking', tab: 'energy', color: '#107e3e', category: 'Maintenance' },
   { id: 'fav-dpr', title: 'Daily Production Report', sub: 'Shift DPR & OEE', tab: 'dpr', color: '#0070f2', category: 'Production & Shop Floor' },
   { id: 'fav-spc', title: 'SPC Capability', sub: 'Cp / Cpk Charts', tab: 'spc', color: '#0070f2', category: 'Quality Management' },
   { id: 'fav-capa', title: 'CAPA Register', sub: 'Corrective Actions', tab: 'capa', color: '#0070f2', category: 'Quality Management' },
@@ -2304,11 +2304,13 @@ function EmptyState({ title, sub }) {
   );
 }
 
-function TextField({ label, ...props }) {
+// Red * after a label = the form cannot be saved without it. Pass req (or required) on any field that must be filled in.
+function ReqStar() { return <span aria-hidden="true" style={{ color: C.red, fontWeight: 700 }}> *</span>; }
+function TextField({ label, req, ...props }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>
-      {label}
-      <input {...props} style={{
+      <span>{label}{(req || props.required) && <ReqStar />}</span>
+      <input {...props} aria-required={(req || props.required) ? true : undefined} style={{
         padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`,
         fontSize: 14, color: C.ink, fontFamily: "'Inter',sans-serif", background: C.panel,
       }} />
@@ -2316,11 +2318,11 @@ function TextField({ label, ...props }) {
   );
 }
 
-function SelectField({ label, options, ...props }) {
+function SelectField({ label, options, req, ...props }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>
-      {label}
-      <select {...props} style={{
+      <span>{label}{(req || props.required) && <ReqStar />}</span>
+      <select {...props} aria-required={(req || props.required) ? true : undefined} style={{
         padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`,
         fontSize: 14, color: C.ink, fontFamily: "'Inter',sans-serif", background: C.panel,
       }}>
@@ -2529,8 +2531,8 @@ function CustomerPortal({ orders, deliveries, onDraftOrderSubmit }) {
       <Card style={{ borderLeft: `4px solid ${C.green}` }}>
         <SectionTitle sub="Submit a new request for Sales approval.">Request New Order</SectionTitle>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <TextField label="Size / Spec" value={draftSpec} onChange={e => setDraftSpec(e.target.value)} placeholder="e.g. 15mm OD, Cu-DHP" />
-          <TextField label="Quantity (kg)" type="number" value={draftQty} onChange={e => setDraftQty(e.target.value)} />
+          <TextField req label="Size / Spec" value={draftSpec} onChange={e => setDraftSpec(e.target.value)} placeholder="e.g. 15mm OD, Cu-DHP" />
+          <TextField req label="Quantity (kg)" type="number" value={draftQty} onChange={e => setDraftQty(e.target.value)} />
           <Button onClick={handleDraftSubmit}>Submit as Draft</Button>
         </div>
       </Card>
@@ -2884,7 +2886,7 @@ function generateDailyBrief({ actualTotal, plannedTotal, pct, attention, inProgr
   const parts = [];
   if (plannedTotal > 0) {
     const tone = pct >= 95 ? 'on track' : pct >= 80 ? 'running a little behind' : 'significantly behind plan';
-    parts.push(`Output today stands at ${actualTotal.toLocaleString()} MT against a plan of ${plannedTotal.toLocaleString()} MT (${pct}% of plan), ${tone}.`);
+    parts.push(`Output today stands at ${mtKgText(actualTotal)} against a plan of ${mtKgText(plannedTotal)} (${pct}% of plan), ${tone}.`);
   } else {
     parts.push(`No production plan has been set for today yet.`);
   }
@@ -2960,7 +2962,10 @@ function useNowTick(ms = 30000) {
   useEffect(() => { const t = setInterval(() => setNow(new Date()), ms); return () => clearInterval(t); }, [ms]);
   return now;
 }
-const fmtMT = (v) => (v == null ? '—' : `${(Math.round(v * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} MT`);
+// Quantities are stored in MT; the screens show kilograms. kgOf / kgText / fmtMT turn a stored MT figure into kg for display.
+const mtToKg = (mt) => Math.round((Number(mt) || 0) * 1000);
+const mtKgText = (mt) => `${mtToKg(mt).toLocaleString()} kg`;
+const fmtMT = (v) => (v == null ? '—' : mtKgText(v));
 const fmtYield = (v) => (v == null ? '—' : `${(Math.round(v * 10) / 10).toFixed(1)}%`);
 
 // Target cost per kg of good output (₹). Editable in Master once that exists; until then this default applies.
@@ -3747,7 +3752,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
         {navBtn('lifecycle', '⚙️ B. Tooling Lifecycle & Re-boring', wearAlerts.length)}
         {navBtn('packaging', '📦 A1. Packaging BOM & Variance Audit')}
         {navBtn('returnables', '🔄 A2. Returnable Bobbins & Pallets')}
-        <button type="button" onClick={() => setTab && setTab('stores')} style={{ padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', border: `1px dashed ${C.border}`, background: 'transparent', color: C.copperDark }}>📋 Item catalog now lives in Stores & Master Store →</button>
+        <button type="button" onClick={() => setTab && setTab('stores')} style={{ padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', border: `1px dashed ${C.border}`, background: 'transparent', color: C.copperDark }}>📋 Item catalog now lives in Stores & Spares →</button>
         {navBtn('transactions', '🧾 C. Store Consumption Logs')}
       </div>
 
@@ -3766,9 +3771,9 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
           {showAddInst && (
             <Card style={{ marginBottom: 16, background: C.panelAlt }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
-                <TextField label="Serial / Etched ID (e.g. D-4095)" value={instForm.id} onChange={e => setInstForm({ ...instForm, id: e.target.value })} placeholder="D-4095" />
+                <TextField req label="Serial / Etched ID (e.g. D-4095)" value={instForm.id} onChange={e => setInstForm({ ...instForm, id: e.target.value })} placeholder="D-4095" />
                 <SelectField
-                  label="Catalog Master Item"
+                  req label="Catalog Master Item"
                   options={masterList.filter(m => TOOL_CATEGORY_SET.has(m.category)).map(m => ({ value: m.id, label: `${m.code} — ${m.name}` }))}
                   value={instForm.consumable_master_id}
                   onChange={e => setInstForm({ ...instForm, consumable_master_id: e.target.value })}
@@ -3792,7 +3797,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                 When a worn die of size X is re-bored to expanded size Y, record its new bore diameter below to return it to active service.
               </p>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, alignItems: 'end' }}>
-                <TextField label="New Expanded Bore Size Y (mm)" type="number" step="0.01" value={reboreModal.newSize} onChange={e => setReboreModal({ ...reboreModal, newSize: e.target.value })} placeholder="e.g. 15.80" />
+                <TextField req label="New Expanded Bore Size Y (mm)" type="number" step="0.01" value={reboreModal.newSize} onChange={e => setReboreModal({ ...reboreModal, newSize: e.target.value })} placeholder="e.g. 15.80" />
                 <TextField label="Polishing / Re-bore Notes" value={reboreModal.notes} onChange={e => setReboreModal({ ...reboreModal, notes: e.target.value })} placeholder="Re-bored +0.8mm & mirror polished" />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: C.ink, paddingBottom: 10 }}>
                   <input type="checkbox" checked={reboreModal.resetMeters} onChange={e => setReboreModal({ ...reboreModal, resetMeters: e.target.checked })} />
@@ -4047,7 +4052,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 14 }}>
               <SelectField label="Finishing / Packing Line" options={['LWC', 'PCC', 'CTL']} value={packLine} onChange={e => setPackLine(e.target.value)} />
               <TextField
-                label={`Finished Output Packed (${packLine === 'LWC' ? 'Coils / Pallets' : 'Boxes / Bundles'})`}
+                req label={`Finished Output Packed (${packLine === 'LWC' ? 'Coils / Pallets' : 'Boxes / Bundles'})`}
                 type="number"
                 min="1"
                 value={packOutputUnits}
@@ -4135,7 +4140,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
               Record Returnable Bobbin / Pallet Movement
             </SectionTitle>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, alignItems: 'end' }}>
-              <TextField label="Customer Name" value={retForm.customer} onChange={e => setRetForm({ ...retForm, customer: e.target.value })} placeholder="e.g. Global HVAC Corp" />
+              <TextField req label="Customer Name" value={retForm.customer} onChange={e => setRetForm({ ...retForm, customer: e.target.value })} placeholder="e.g. Global HVAC Corp" />
               <SelectField
                 label="Returnable Asset"
                 options={masterList.filter(m => RETURNABLE_CATEGORY_SET.has(m.category)).map(m => ({ value: m.code, label: `${m.code} — ${m.name}` }))}
@@ -4148,7 +4153,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
                 value={retForm.type}
                 onChange={e => setRetForm({ ...retForm, type: e.target.value })}
               />
-              <TextField label="Quantity (pcs)" type="number" min="1" value={retForm.qty} onChange={e => setRetForm({ ...retForm, qty: e.target.value })} />
+              <TextField req label="Quantity (pcs)" type="number" min="1" value={retForm.qty} onChange={e => setRetForm({ ...retForm, qty: e.target.value })} />
               <TextField label="Challan / Delivery Ref" value={retForm.ref} onChange={e => setRetForm({ ...retForm, ref: e.target.value })} placeholder="e.g. 600000012" />
             </div>
             <div style={{ marginTop: 12 }}>
@@ -4210,7 +4215,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
             </SectionTitle>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, alignItems: 'end' }}>
               <SelectField
-                label="Catalog Item"
+                req label="Catalog Item"
                 options={masterList.map(m => ({ value: m.id, label: `${m.code} — ${m.name}` }))}
                 value={txForm.consumable_id}
                 onChange={e => setTxForm({ ...txForm, consumable_id: e.target.value })}
@@ -4219,7 +4224,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
               <SelectField label="Machine / Packing Station" options={allAppliesTo.filter(a => a !== 'All')} value={txForm.machine_id} onChange={e => setTxForm({ ...txForm, machine_id: e.target.value })} />
               <TextField label="Production Order / Batch ID" value={txForm.production_order_id} onChange={e => setTxForm({ ...txForm, production_order_id: e.target.value })} placeholder="e.g. 100000045" />
               <SelectField label="Action" options={TX_ACTIONS} value={txForm.action} onChange={e => setTxForm({ ...txForm, action: e.target.value })} />
-              <TextField label="Qty Issued / Returned" type="number" step="0.01" value={txForm.qty_issued} onChange={e => setTxForm({ ...txForm, qty_issued: e.target.value })} />
+              <TextField req label="Qty Issued / Returned" type="number" step="0.01" value={txForm.qty_issued} onChange={e => setTxForm({ ...txForm, qty_issued: e.target.value })} />
               <SelectField label="Reason for Removal" options={REMOVAL_REASONS} value={txForm.reason_for_removal} onChange={e => setTxForm({ ...txForm, reason_for_removal: e.target.value })} />
             </div>
             <div style={{ marginTop: 12 }}>
@@ -4327,7 +4332,7 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
         <TlModal title="Edit returnable record" onClose={() => setEditRet(null)} width={640}
           footer={<><span style={{ marginRight: 'auto', fontSize: 12.5, color: C.red }}>{editRet.err}</span><Button variant="secondary" onClick={() => setEditRet(null)}>Cancel</Button><Button onClick={saveEditRet} data-testid="ret-save">Save changes</Button></>}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12 }}>
-            <TextField label="Customer Name" value={editRet.customer} onChange={e => setEditRet({ ...editRet, customer: e.target.value })} />
+            <TextField req label="Customer Name" value={editRet.customer} onChange={e => setEditRet({ ...editRet, customer: e.target.value })} />
             <SelectField label="Returnable Asset"
               options={masterList.filter(m => RETURNABLE_CATEGORY_SET.has(m.category) || m.code === editRet.assetCode).map(m => ({ value: m.code, label: m.code + ' - ' + m.name }))}
               value={editRet.assetCode} onChange={e => setEditRet({ ...editRet, assetCode: e.target.value })} />
@@ -4443,9 +4448,9 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachine
       {showAddMachine && (
         <Card style={{ marginBottom: 16, background: C.panelAlt }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
-            <TextField label="Machine ID" value={newMachineId} onChange={e => setNewMachineId(e.target.value)} placeholder="e.g. SPB-05" />
-            <TextField label="Machine Name" value={newMachineName} onChange={e => setNewMachineName(e.target.value)} placeholder="e.g. Spinner Block 5" />
-            <TextField label="Process" value={newMachineProcess} onChange={e => setNewMachineProcess(e.target.value)} placeholder="e.g. Spinner" />
+            <TextField req label="Machine ID" value={newMachineId} onChange={e => setNewMachineId(e.target.value)} placeholder="e.g. SPB-05" />
+            <TextField req label="Machine Name" value={newMachineName} onChange={e => setNewMachineName(e.target.value)} placeholder="e.g. Spinner Block 5" />
+            <TextField req label="Process" value={newMachineProcess} onChange={e => setNewMachineProcess(e.target.value)} placeholder="e.g. Spinner" />
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <Button onClick={handleAddMachine}>Save Machine</Button>
@@ -4774,11 +4779,11 @@ function DigitalProductPassport({ batches, heats, energyLogs }) {
           <h4 style={{ margin: '0 0 12px 0', fontSize: 13, color: '#166534', display: 'flex', alignItems: 'center', gap: 6 }}><Zap size={16} /> Sustainability</h4>
           {kwhPerMT != null ? (
             <>
-              <div style={{ fontSize: 24, fontWeight: 800, color: '#15803D' }}>{Math.round(kwhPerMT).toLocaleString()} kWh/MT</div>
-              <div style={{ fontSize: 12, color: '#166534' }}>Plant average this month: {Math.round(en.kwh).toLocaleString()} kWh from {en.machines} metered machine{en.machines === 1 ? '' : 's'} over {fmtNum(packedMT, 1)} MT packed. Energy is not metered per batch.</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: '#15803D' }}>{(kwhPerMT / 1000).toFixed(2)} kWh/kg</div>
+              <div style={{ fontSize: 12, color: '#166534' }}>Plant average this month: {Math.round(en.kwh).toLocaleString()} kWh from {en.machines} metered machine{en.machines === 1 ? '' : 's'} over {mtToKg(packedMT).toLocaleString()} kg packed. Energy is not metered per batch.</div>
             </>
           ) : (
-            <div style={{ fontSize: 12.5, color: '#166534' }}>Needs at least two meter readings per machine this month (Machine Energy tab) and some packed output to work out kWh per MT.</div>
+            <div style={{ fontSize: 12.5, color: '#166534' }}>Needs at least two meter readings per machine this month (Machine Energy tab) and some packed output to work out kWh per kg.</div>
           )}
         </div>
       </div>
@@ -4817,9 +4822,9 @@ function DynamicScheduler({ spinnerPlans, maintenanceLogs, capacities, onOpenPla
   const busiest = [...rows].filter(r => !r.down).sort((a, b) => b.plannedMT - a.plannedMT)[0];
   let suggestion = null;
   if (stuck && target) {
-    suggestion = <>Spinner <strong>{stuck.id}</strong> has an open breakdown but still carries {stuck.lines.length} planned size{stuck.lines.length === 1 ? '' : 's'} ({fmtNum(stuck.plannedMT, 2)} MT). Moving them to <strong>{target.id}</strong> ({fmtNum(target.plannedMT, 2)} MT planned) keeps the plan achievable.</>;
+    suggestion = <>Spinner <strong>{stuck.id}</strong> has an open breakdown but still carries {stuck.lines.length} planned size{stuck.lines.length === 1 ? '' : 's'} ({mtToKg(stuck.plannedMT).toLocaleString()} kg). Moving them to <strong>{target.id}</strong> ({mtToKg(target.plannedMT).toLocaleString()} kg planned) keeps the plan achievable.</>;
   } else if (busiest && target && busiest.id !== target.id && busiest.plannedMT > 0 && (perSpinnerDayMT > 0 ? busiest.load >= 85 && target.load < 60 : busiest.plannedMT >= 2 * Math.max(target.plannedMT, 0.001) && lines.length > 1)) {
-    suggestion = <><strong>{busiest.id}</strong> carries {fmtNum(busiest.plannedMT, 2)} MT today while <strong>{target.id}</strong> has {fmtNum(target.plannedMT, 2)} MT. Shifting one size across would balance the load.</>;
+    suggestion = <><strong>{busiest.id}</strong> carries {mtToKg(busiest.plannedMT).toLocaleString()} kg today while <strong>{target.id}</strong> has {mtToKg(target.plannedMT).toLocaleString()} kg. Shifting one size across would balance the load.</>;
   }
 
   return (
@@ -4852,7 +4857,7 @@ function DynamicScheduler({ spinnerPlans, maintenanceLogs, capacities, onOpenPla
               <div key={r.id} style={{ marginBottom: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
                   <span style={{ fontWeight: 600, color: C.ink }}>{r.id} {r.down && <span style={{ color: C.red, fontWeight: 700 }}>· DOWN</span>}</span>
-                  <span style={{ color: C.subtext, fontWeight: st === 'critical' ? 700 : 400 }}>{fmtNum(r.plannedMT, 2)} MT{perSpinnerDayMT > 0 ? ` · ${Math.round(r.load)}%` : ''}</span>
+                  <span style={{ color: C.subtext, fontWeight: st === 'critical' ? 700 : 400 }}>{mtToKg(r.plannedMT).toLocaleString()} kg{perSpinnerDayMT > 0 ? ` · ${Math.round(r.load)}%` : ''}</span>
                 </div>
                 <div style={{ width: '100%', background: C.borderSoft, height: 8, borderRadius: 4, overflow: 'hidden' }}>
                   <div style={{ width: `${Math.min(100, r.load)}%`, height: '100%', transition: 'width 0.6s ease-in-out', background: st === 'critical' ? '#EF4444' : st === 'warning' ? '#F59E0B' : '#10B981' }} />
@@ -5124,7 +5129,7 @@ const REPORTS = [
           { KPI: 'Report date', Value: todayKey() },
           { KPI: 'Open orders', Value: open.length },
           { KPI: 'Overdue orders', Value: overdue.length },
-          { KPI: 'Packed this month (MT)', Value: Number(fmtNum(packedMT, 2)) },
+          { KPI: 'Packed this month (kg)', Value: mtToKg(packedMT) },
           { KPI: 'Deliveries this month', Value: mDeliv.length },
           { KPI: 'Dispatched this month (kg)', Value: Math.round(mDeliv.reduce((s, d) => s + (Number(d.totalKg) || 0), 0)) },
           { KPI: 'Machine yield this month (%)', Value: inKg > 0 ? Number(((acc / inKg) * 100).toFixed(1)) : '' },
@@ -5204,7 +5209,7 @@ const REPORTS = [
       };
     } },
   { id: 'melting', group: 'Production', title: 'Melting heats', desc: 'Heats cast: furnace, raw material charged, shells and weights.',
-    build: (c, rg) => ({ 'Heats': (c.heats || []).filter(h => inRangeIso(h.at, rg)).map(h => ({ Date: h.date, Furnace: h.furnace, 'Cathode MT': h.raw?.cathodeMT ?? '', 'Billet MT': h.raw?.billetMT ?? '', 'Rod MT': h.raw?.rodMT ?? '', 'Total raw MT': h.raw?.totalMT ?? '', Shells: (h.shells || []).map(s => `${s.code} (${s.weightKg} kg)`).join(' | '), 'Shell weight kg': (h.shells || []).reduce((s, x) => s + (Number(x.weightKg) || 0), 0), By: h.by })) }) },
+    build: (c, rg) => ({ 'Heats': (c.heats || []).filter(h => inRangeIso(h.at, rg)).map(h => ({ Date: h.date, Furnace: h.furnace, 'Cathode kg': h.raw?.cathodeMT != null ? mtToKg(h.raw.cathodeMT) : '', 'Billet kg': h.raw?.billetMT != null ? mtToKg(h.raw.billetMT) : '', 'Rod kg': h.raw?.rodMT != null ? mtToKg(h.raw.rodMT) : '', 'Total raw kg': h.raw?.totalMT != null ? mtToKg(h.raw.totalMT) : '', Shells: (h.shells || []).map(s => `${s.code} (${s.weightKg} kg)`).join(' | '), 'Shell weight kg': (h.shells || []).reduce((s, x) => s + (Number(x.weightKg) || 0), 0), By: h.by })) }) },
   { id: 'quality', group: 'Quality', title: 'Quality measurements & rejects', desc: 'Every pass measurement with tolerance verdict, plus the reject-reason Pareto.',
     build: (c, rg) => ({
       'Measurements': (c.batches || []).flatMap(b => (b.passMeasurements || []).filter(m => inRangeIso(m.at, rg)).map(m => ({ 'Production order': b.productionOrderNo || '', Spec: b.spec || '', Stage: m.stage, Standard: m.standardName || '', 'Target OD': m.targetOD ?? '', 'Tol OD': m.toleranceOD ?? '', 'Actual OD': m.actualOD ?? '', 'OD ok': m.withinToleranceOD == null ? '' : m.withinToleranceOD ? 'Yes' : 'NO', 'Target thk': m.targetThickness ?? '', 'Tol thk': m.toleranceThickness ?? '', 'Actual thk': m.actualThickness ?? '', 'Thk ok': m.withinToleranceThickness == null ? '' : m.withinToleranceThickness ? 'Yes' : 'NO', At: m.at, By: m.by || '' }))),
@@ -5282,7 +5287,7 @@ const REPORTS = [
         const rows = mergeDprWithLegacy(c.dprEntries[k]?.rows, (c.machineProd || {})[k]);
         return dprComputeMachineRows(rows, (c.dprClosed || {})[k] || null, {})
           .filter(m => Object.values(m.typed || {}).some(v => v !== '' && v != null) || m.r.planOutput != null || m.r.actualOutput != null)
-          .map(m => ({ Date: date, Shift: shift, Process: m.process, Machine: m.machineId, 'Plan (MT)': num(m.r.planOutput), 'Actual (MT)': num(m.r.actualOutput), 'Achiev %': rp(m.achievement), 'Input (MT)': num(m.r.input), 'Good output (MT)': num(m.r.goodOutput), 'Yield %': rp(m.yieldPct), 'Run (h)': num(m.r.runTime), 'Downtime (h)': num(m.r.downtime), 'Availability %': rp(m.availability), 'Performance %': rp(m.performance), 'Quality %': rp(m.quality), 'OEE %': rp(m.oee) }));
+          .map(m => ({ Date: date, Shift: shift, Process: m.process, Machine: m.machineId, 'Plan (kg)': mtKgVal(num(m.r.planOutput)), 'Actual (kg)': mtKgVal(num(m.r.actualOutput)), 'Achiev %': rp(m.achievement), 'Input (kg)': mtKgVal(num(m.r.input)), 'Good output (kg)': mtKgVal(num(m.r.goodOutput)), 'Yield %': rp(m.yieldPct), 'Run (h)': num(m.r.runTime), 'Downtime (h)': num(m.r.downtime), 'Availability %': rp(m.availability), 'Performance %': rp(m.performance), 'Quality %': rp(m.quality), 'OEE %': rp(m.oee) }));
       });
       return { 'Daily reports': keys.map(k => ({ Key: k, ...flatRow(c.dprEntries[k]) })), 'Machine OEE': oeeRows };
     } },
@@ -5565,7 +5570,7 @@ function EnergySummaryWidget({ energyLogs, batches, onOpen }) {
       </div>
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', margin: '6px 0 12px' }}>
         <div><div style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>KWH THIS MONTH</div><div className="font-mono" style={{ fontSize: 22, fontWeight: 800 }}>{en.kwh > 0 ? Math.round(en.kwh).toLocaleString() : '—'}</div></div>
-        <div><div style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>KWH PER MT PACKED</div><div className="font-mono" style={{ fontSize: 22, fontWeight: 800 }}>{kwhPerMT != null ? Math.round(kwhPerMT).toLocaleString() : '—'}</div></div>
+        <div><div style={{ fontSize: 11, color: C.faint, fontWeight: 700 }}>KWH PER KG PACKED</div><div className="font-mono" style={{ fontSize: 22, fontWeight: 800 }}>{kwhPerMT != null ? (kwhPerMT / 1000).toFixed(2) : '—'}</div></div>
       </div>
       {en.kwh <= 0 && <p style={{ fontSize: 12.5, color: C.subtext, margin: '0 0 10px' }}>Needs at least two meter readings per machine this month.</p>}
       {onOpen && <Button variant="secondary" onClick={onOpen}>Enter meter readings</Button>}
@@ -6199,7 +6204,7 @@ function CycleCountTab({ sessions, rawItems, finishedItems, onStart, onSaveLine,
   );
 }
 
-function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenanceLogs, dprEntries, rawConsumption, capaRecords, pmTasks, setTab, planMeta, spinnerPlans, dispatchPlans, deliveries, heats, settings, costData, machineProd, user, toolingItems, energyLogs, capacities,  }) {
+function ExecutiveDashboard({ showTiles = true, showProd = true, showRm = true, showOps = true, orders, dailyPlans, batches, rawItems, maintenanceLogs, dprEntries, rawConsumption, capaRecords, pmTasks, setTab, planMeta, spinnerPlans, dispatchPlans, deliveries, heats, settings, costData, machineProd, user, toolingItems, energyLogs, capacities,  }) {
   const now = useNowTick();
   const DEFAULT_WIDGETS = ['Demand AI', 'Sales', 'Floor Map', 'Passports'];
   const widgetKey = `ctpm:dashboard_widgets:${String(user?.name || 'guest').toLowerCase()}`;   // remembered on this device, per person
@@ -6295,6 +6300,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
 
   return (
     <div data-testid="exec-dashboard">
+      {showTiles && (<>
       {/* header strip */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '10px 16px', marginBottom: 16, background: C.sidebar, color: '#fff', borderRadius: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -6319,12 +6325,12 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
           sub={todayPlan.status === 'Missing' ? 'no plan entered for today' : `${todayPlan.sizes} size${todayPlan.sizes === 1 ? '' : 's'} · ${todayPlan.startedPct == null ? 'nothing to start' : `${todayPlan.startedPct}% started on the line`}${todayPlan.late ? ' · entered late' : ''}`} />
         <Tile metric="tomorrowPlan" label="TOMORROW'S PLAN" value={tomorrowStatus} testid="dash-tomorrow-plan" tab="plan" tone={planTone[tomorrowStatus]}
           sub={`${tomorrowLines.length} size${tomorrowLines.length === 1 ? '' : 's'} planned`} />
-        <Tile metric="costPerKg" label="COST OF OPERATIONS (MONTH)" tab={showCost ? 'cost' : undefined} testid="dash-cost-kg"
+        {showCost && (<Tile metric="costPerKg" label="COST OF OPERATIONS (MONTH)" tab={showCost ? 'cost' : undefined} testid="dash-cost-kg"
           value={showCost ? fmtPerKg(costInfo.perKg) : '—'}
           tone={showCost ? { green: C.green, amber: C.amber, red: C.red, none: C.ink }[costInfo.tone] : C.faint}
           sub={!showCost ? 'visible to managers and the Owner' : costInfo.perKg == null ? 'no operating cost or output entered this month' : costInfo.target == null ? 'conversion cost · no target set' : `conversion cost · target ${fmtPerKg(costInfo.target)} · ${costInfo.variance <= 0 ? '' : '+'}${costInfo.variance.toFixed(2)} (${costInfo.variancePct <= 0 ? '' : '+'}${costInfo.variancePct.toFixed(1)}%)`}>
           {showCost && monthCost && monthCost.rmNet > 0 && monthCost.costPerMT != null && <div data-testid="dash-cost-total" style={{ fontSize: 11.5, color: C.faint, marginTop: 4 }}>incl. copper {fmtPerKg(monthCost.costPerMT / 1000)}</div>}
-        </Tile>
+        </Tile>)}
         <Tile metric="openOrders" label="OPEN ORDERS" value={openOrdersCount} tab="orders" testid="dash-open-orders" sub="not yet delivered" />
         <Tile metric="pendingDispatch" label="PENDING DISPATCH ORDERS" value={pendingDispatch} tab="dispatch" testid="dash-pending-dispatch" tone={pendingDispatch ? C.amber : C.ink} sub="planned earlier, not fully sent" />
         <Tile metric="completedToday" label="PRODUCTION ORDERS CLOSED TODAY" value={completedToday} tab="stages" testid="dash-closed-today" tone={completedToday ? C.green : C.ink} sub="completed, rejected ones excluded" />
@@ -6339,8 +6345,9 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
           sub={furnaces.map(f => `${f.name} ${f.state.toLowerCase()}`).join(' · ')} />
         <Tile metric="ordersAttention" label="ORDERS NEEDING ATTENTION" value={attention.length} tab="orders" tone={attention.length ? C.red : C.ink} sub={`overdue or due within ${APP_CONFIG.dueSoonDays} day${APP_CONFIG.dueSoonDays === 1 ? '' : 's'}`} />
       </div>
+</>)}
 {/* --- COMMAND CENTER & CUSTOMIZABLE WIDGET GRID --- */}
-      <CommandCenter activeWidgets={activeWidgets} toggleWidget={toggleWidget} alerts={maintAlerts} canWidget={canWidget} onReset={() => setActiveWidgets(DEFAULT_WIDGETS)} />
+      {DASHBOARD_WIDGETS.some(canWidget) && <CommandCenter activeWidgets={activeWidgets} toggleWidget={toggleWidget} alerts={maintAlerts} canWidget={canWidget} onReset={() => setActiveWidgets(DEFAULT_WIDGETS)} />}
       {/* minmax(320px) fits more widgets per row on most screens; alignItems:'start' stops short widgets stretching to match tall ones */}
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', alignItems: 'start', marginBottom: 18 }}>
         {activeWidgets.includes('Demand AI') && canWidget('Demand AI') && <AIDemandForecasting orders={orders} onDraft={() => setActiveWidgets(p => p.includes('Sales') ? p : [...p, 'Sales'])} />}
@@ -6355,8 +6362,9 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
         {activeWidgets.includes('Energy') && canWidget('Energy') && <EnergySummaryWidget energyLogs={energyLogs} batches={batches} onOpen={() => setTab('energy')} />}
         {activeWidgets.includes('Tooling') && canWidget('Tooling') && <ToolingManagement toolingData={toolingItems || []} />}
       </div>
-      <ExecutiveRMOverview rawItems={rawItems} user={user} setTab={setTab} />
+      {showRm && <ExecutiveRMOverview rawItems={rawItems} user={user} setTab={setTab} />}
 
+      {showProd && (<>
       {/* flow + furnaces */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.35fr) minmax(0,1fr)', gap: 16, marginBottom: 18 }} className="dash-grid">
         <Card data-testid="flow-strip">
@@ -6412,8 +6420,8 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
                   <BarChart data={series} margin={{ top: 4, right: 8, left: -14, bottom: 0 }} barGap={2}>
                     <CartesianGrid strokeDasharray="3 3" stroke={C.borderSoft} vertical={false} />
                     <XAxis dataKey="label" tick={{ fontSize: 10.5 }} interval={1} />
-                    <YAxis tick={{ fontSize: 10.5 }} />
-                    <Tooltip formatter={(v, n) => [`${v} MT`, n]} />
+                    <YAxis tick={{ fontSize: 10.5 }} tickFormatter={(v) => Math.round(v * 1000).toLocaleString()} />
+                    <Tooltip formatter={(v, n) => [mtKgText(v), n]} />
                     <Bar dataKey="shellsMT" name="Shells cast" fill={CHART_A} barSize={9} radius={[4, 4, 0, 0]} isAnimationActive={false} />
                     <Bar dataKey="packedMT" name="Packed" fill={CHART_B} barSize={9} radius={[4, 4, 0, 0]} isAnimationActive={false} />
                   </BarChart>
@@ -6458,7 +6466,10 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
         </Card>
       </div>
 
+      </>)}
+
       {/* operations detail */}
+      {showOps && (
       <CollapsibleSection id="dash.ops" testid="exec-ops" card title="Operations detail"
         summary={`${bufs.READY_FOR_ANNEALING.count + bufs.READY_FOR_PACKING.count} waiting to be pulled · ${bufs.AWAIT_QC.count} awaiting quality · ${lowStock.length} low stock · ${openCapa.length} open CAPAs · ${openBreakdowns.length} open breakdowns`}>
         <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: C.faint, marginBottom: 8 }}>Production, dispatch &amp; stock</div>
@@ -6476,7 +6487,7 @@ function ExecutiveDashboard({ orders, dailyPlans, batches, rawItems, maintenance
           <Mini metric="openBreakdowns" label="OPEN BREAKDOWNS" value={openBreakdowns.length} tab="maintenance" tone={openBreakdowns.length ? C.red : C.ink} sub={`${breakdownsToday} reported today`} />
           <Mini metric="outOfTolerance" label="OUT-OF-TOLERANCE TODAY" value={outOfTol.length} tab="spc" tone={outOfTol.length ? C.red : C.ink} sub="OD / thickness outside spec" />
         </div>
-      </CollapsibleSection>
+      </CollapsibleSection>)}
     </div>
   );
 }
@@ -6639,8 +6650,8 @@ function OrderForm({ onAdd, onClose, user, orders, settings, onUpdateSettings })
         </p>
         {weeklyCapacity > 0 && dueWeek && (
           <p style={{ fontSize: 12, color: overCapacity ? C.red : C.subtext, marginTop: 10, fontWeight: overCapacity ? 600 : 400 }}>
-            Week of {formatDate(dueWeek)}: {committedThisWeek.toLocaleString()} MT already committed
-            {f.qty ? ` + this order = ${wouldBeTotal.toLocaleString()} MT` : ''} against a {weeklyCapacity.toLocaleString()} MT/week capacity.
+            Week of {formatDate(dueWeek)}: {committedThisWeek.toLocaleString()} kg already committed
+            {f.qty ? ` + this order = ${wouldBeTotal.toLocaleString()} kg` : ''} against a {weeklyCapacity.toLocaleString()} kg/week capacity.
             {overCapacity ? ' This would overbook that week.' : ''}
           </p>
         )}
@@ -6657,7 +6668,7 @@ function OrderForm({ onAdd, onClose, user, orders, settings, onUpdateSettings })
           <Button type="button" onClick={submit}>{overCapacity ? 'Add anyway' : 'Add order'}</Button>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.faint, marginLeft: 'auto' }}>
-            Weekly capacity (MT):
+            Weekly capacity (kg):
             <input type="number" min="0" defaultValue={weeklyCapacity} onBlur={e => onUpdateSettings({ weeklyCapacityMT: Number(e.target.value) || 0 })}
               style={{ width: 80, padding: '4px 8px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12 }} />
           </label>
@@ -7287,13 +7298,13 @@ function PlanLineForm({ machines, orders, knownSpecs, initial, onSave, onClose, 
           </select>
         </label>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>
-          Size / tube spec
+          <span>Size / tube spec <span style={{ color: C.red, fontWeight: 700 }}>*</span></span>
           <input aria-label="Size / spec" list="plan-known-specs" value={f.spec} onChange={e => set('spec', e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()}
             placeholder="15mm OD, Cu-DHP" style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }} />
           <datalist id="plan-known-specs">{(knownSpecs || []).map(sp => <option key={sp} value={sp} />)}</datalist>
           {f.spec.trim() && normalizeSpec(f.spec) !== f.spec.trim() && <span data-testid="spec-normalised" style={{ color: C.green, fontSize: 12, fontWeight: 600 }}>= {normalizeSpec(f.spec)}</span>}
         </label>
-        <SelectField label="Spinner" aria-label="Spinner" options={m.spinner.length ? ['', ...m.spinner] : ['']} value={f.spinnerMachine} onChange={e => set('spinnerMachine', e.target.value)} />
+        <SelectField req label="Spinner" aria-label="Spinner" options={m.spinner.length ? ['', ...m.spinner] : ['']} value={f.spinnerMachine} onChange={e => set('spinnerMachine', e.target.value)} />
         <SelectField label="Route" aria-label="Route" options={['', ...ROUTES]} value={f.route} onChange={e => { set('route', e.target.value); set('routeMachine', ''); }} />
         {f.route && <SelectField label={`${f.route} machine`} aria-label="Route machine" options={routeList.length ? ['', ...routeList] : ['']} value={f.routeMachine} onChange={e => set('routeMachine', e.target.value)} />}
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: C.ink, fontWeight: 500, alignSelf: 'end', paddingBottom: 10 }}>
@@ -7346,13 +7357,13 @@ function DispatchPlanForm({ orders, dispatchRows, onAdd, onClose }) {
     <Card style={{ marginBottom: 14, background: C.panelAlt }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500, gridColumn: 'span 2' }}>
-          Order to dispatch
+          <span>Order to dispatch <span style={{ color: C.red, fontWeight: 700 }}>*</span></span>
           <select aria-label="Order to dispatch" value={orderId} onChange={e => pick(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
             <option value="">— choose an order —</option>
             {options.map(o => <option key={o.id} value={o.id}>{orderLabel(o)} · {o.customer} · {o.spec ? orderTitle(o) : 'no spec'} · pending {fmtQty(orderPendingQty(o), o.unit)}</option>)}
           </select>
         </label>
-        <TextField label="Quantity to dispatch" aria-label="Dispatch quantity" type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} />
+        <TextField req label="Quantity to dispatch" aria-label="Dispatch quantity" type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} />
         <TextField label="Notes (optional)" aria-label="Dispatch notes" value={notes} onChange={e => setNotes(e.target.value)} />
       </div>
       {err && <p role="alert" style={{ color: C.red, fontSize: 12.5, marginTop: 10 }}>{err}</p>}
@@ -7601,13 +7612,13 @@ function DailyPlanTab({ dailyPlans, onAddRow, onUpdateActual, onDeleteRow, downt
 
       {/* ---- C. Line-wise output log (feeds Dashboard & Trends) ---- */}
       {/* ---- C. Process plan by machine and shift ---- */}
-      <CollapsibleSection id="plan.process" testid="plan-process" title="C · Process plan by machine and shift" sub="How much each process and machine will run on the day, for the Day and the Night shift (MT). Spinner, LWC, CTL and Packing machines fill themselves from the sizes above; the rest are typed. The Daily Report uses these numbers as its plan."
+      <CollapsibleSection id="plan.process" testid="plan-process" title="C · Process plan by machine and shift" sub="How much each process and machine will run on the day, for the Day and the Night shift (kg). Spinner, LWC, CTL and Packing machines fill themselves from the sizes above; the rest are typed. The Daily Report uses these numbers as its plan."
         summary="Day and Night plan for each machine and its monthly capacity"
         right={<>{canEdit && <Button variant="secondary" onClick={() => { const r = onCopyProcessPlan(addDaysKey(date, -1), date); setMsg(r?.error || (r?.ok ? `Copied ${r.copied} machine${r.copied === 1 ? '' : 's'} from ${formatDate(addDaysKey(date, -1))}.` : '')); }}>Same as yesterday</Button>}</>}>
       <Card data-testid="process-plan-card" style={{ padding: 0, overflow: 'hidden', marginBottom: 8 }}>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 700 }}>
-            <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Process', 'Machine', `Day ${shiftWin.Day} (MT)`, `Night ${shiftWin.Night} (MT)`, 'Source'].map(h => <th key={h} style={{ padding: '8px 12px', fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
+            <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Process', 'Machine', `Day ${shiftWin.Day} (kg)`, `Night ${shiftWin.Night} (kg)`, 'Source'].map(h => <th key={h} style={{ padding: '8px 12px', fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
             <tbody>
               {DPR_PROCESS_MACHINES.flatMap(g => {
                 const derived = DPR_DERIVED_PROCESSES.includes(g.process);
@@ -7625,8 +7636,8 @@ function DailyPlanTab({ dailyPlans, onAddRow, onUpdateActual, onDeleteRow, downt
                       {['Day', 'Night'].map(sh => (
                         <td key={sh} style={{ padding: '7px 12px' }}>
                           {derived || !canEdit
-                            ? <span className="font-mono" data-testid={`pp-${id}-${sh}`}>{(sh === 'Day' ? pl : pn) ?? '—'}</span>
-                            : <MiniInput label={`Process plan ${id} ${sh}`} value={typed[sh]} onChange={v => { const r = onUpdateProcessPlan(date, id, sh, v); setMsg(r?.error || ''); }} width={80} />}
+                            ? <span className="font-mono" data-testid={`pp-${id}-${sh}`}>{mtKgNum(sh === 'Day' ? pl : pn)}</span>
+                            : <MiniInput label={`Process plan ${id} ${sh}`} value={typed[sh]} onChange={v => { const r = onUpdateProcessPlan(date, id, sh, v); setMsg(r?.error || ''); }} width={80} scale={1000} />}
                         </td>
                       ))}
                       <td style={{ padding: '7px 12px', fontSize: 11.5, color: C.faint }}>{derived ? 'from the plan above' : canEdit ? 'typed' : 'typed by the plan owners'}</td>
@@ -7636,8 +7647,8 @@ function DailyPlanTab({ dailyPlans, onAddRow, onUpdateActual, onDeleteRow, downt
                 return [...rowsOut, (
                   <tr key={`${g.process}-cap`} data-testid={`pp-cap-${g.process}`} style={{ background: C.panelAlt }}>
                     <td colSpan={5} style={{ padding: '4px 12px', fontSize: 11.5, color: cap && cap.over ? C.red : C.subtext }}>
-                      {g.process}: {dayPlan} MT today · {Math.round(monthPlanned * 1000) / 1000} MT planned in {formatMonth(monthKey)}
-                      {cap ? ` of ${cap.capacity.toLocaleString()} MT capacity (${cap.pct}%)${cap.over ? ` — over capacity by ${cap.overBy} MT` : ` — ${cap.left} MT left`}` : ' · no monthly capacity set (Master)'}
+                      {g.process}: {mtKgNum(dayPlan)} kg today · {mtKgNum(monthPlanned)} kg planned in {formatMonth(monthKey)}
+                      {cap ? ` of ${mtKgNum(cap.capacity)} kg capacity (${cap.pct}%)${cap.over ? ` — over capacity by ${mtKgNum(cap.overBy)} kg` : ` — ${mtKgNum(cap.left)} kg left`}` : ' · no monthly capacity set (Master)'}
                     </td>
                   </tr>
                 )];
@@ -7749,7 +7760,7 @@ function DailyPlanTab({ dailyPlans, onAddRow, onUpdateActual, onDeleteRow, downt
    The supervisor picks the furnace; code, year, month letter and date are fetched and locked; only the starting
    shell number (and the weight, and how much raw material went in) is typed. One heat makes TWO shells of the same
    weight -> two production orders, the second shell number following the first. Numbers and weights stay editable.
-   Raw material is recorded in MT per kind (cathode / billet / copper rod-coil) and deducted from stock.
+   Raw material is recorded in kg per kind (cathode / billet / copper rod-coil) and deducted from stock.
    ========================================================================= */
 const FURNACES = [
   { name: 'HCC 1', code: 'A', machineId: 'HCC-01' },
@@ -7814,6 +7825,8 @@ function suggestShellNos(heats, furnaceName) {
 }
 // Everything checked before a heat is saved (the form shows the same errors; the handler enforces them).
 // f: { furnace, shell1, shell2, weight1, weight2, raw: { Cathode: {mt, itemId}, Billet: {...}, 'Copper rod / coil': {...} } }
+// raw material is held in MT; the Melting screen shows and takes kilograms
+const meltKgText = (mt) => `${Math.round((Number(mt) || 0) * 1000).toLocaleString()} kg`;
 function validateHeat(f, { batches, rawItems, date, maintenanceLogs }) {
   const e = {};
   const furnace = furnaceByName(f.furnace);
@@ -7839,15 +7852,15 @@ function validateHeat(f, { batches, rawItems, date, maintenanceLogs }) {
     const r = f.raw?.[kind] || {};
     const txt = String(r.mt ?? '').trim();
     if (txt === '') return;
-    const mt = Number(txt);
-    if (!(mt >= 0)) { e['raw:' + kind] = `Enter the MT of ${kind.toLowerCase()} used (0 or more).`; return; }
+    const mt = Number(txt) / 1000;   // typed in kg, kept in MT
+    if (!(mt >= 0)) { e['raw:' + kind] = `Enter the kg of ${kind.toLowerCase()} used (0 or more).`; return; }
     if (mt === 0) return;
     const choices = (rawItems || []).filter(i => rawKindOf(i) === kind);
     const item = (r.itemId && choices.find(i => i.id === r.itemId)) || choices.find(i => Number(i.qty) > 0) || choices[0] || null;
     if (item) {
       const qty = mtToItemQty(mt, item.unit);
       if (qty == null) { e['raw:' + kind] = `${item.name} is counted in ${item.unit}: set its unit to MT or kg in Inventory first.`; return; }
-      if (qty > Number(item.qty) + 1e-9) { e['raw:' + kind] = `Only ${Number(item.qty).toLocaleString()} ${item.unit} of ${item.name} is in stock (${round3m(mt)} MT asked).`; return; }
+      if (qty > Number(item.qty) + 1e-9) { e['raw:' + kind] = `Only ${Number(item.qty).toLocaleString()} ${item.unit} of ${item.name} is in stock (${Math.round(mt * 1000).toLocaleString()} kg asked).`; return; }
       lines.push({ kind, itemId: item.id, itemName: item.name, mt: round3m(mt), qty: round3m(qty), unit: item.unit, deducted: true });
     } else {
       lines.push({ kind, itemId: null, itemName: null, mt: round3m(mt), qty: null, unit: null, deducted: false });   // no stock item of this kind: usage is recorded only
@@ -7953,6 +7966,7 @@ function HeatForm({ heats, batches, rawItems, maintenanceLogs, user, onCast, onC
     <Card data-testid="heat-form" style={{ marginBottom: 16, background: C.panelAlt, border: `1px solid ${C.copperSoft}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
         <h3 className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink }}>New heat — Melting &amp; Casting</h3>
+        <span style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>* must be filled in before the heat can be saved</span>
         <span style={{ fontSize: 12, color: C.subtext }}>Cast by <strong style={{ color: C.ink }}>{user?.name}</strong> · each heat makes <strong>2 shells</strong> of the same weight</span>
       </div>
       <p style={{ fontSize: 12, color: C.subtext, marginBottom: 12 }}>Pick the furnace: its code, the year, the month letter and the date are filled in and locked. Type the starting shell number and the shell weight; the second shell and its production order are created automatically. Everything marked ✎ can still be changed by hand.</p>
@@ -7983,26 +7997,26 @@ function HeatForm({ heats, batches, rawItems, maintenanceLogs, user, onCast, onC
         </div>
         <div style={{ padding: 12, border: `1px solid ${C.border}`, borderRadius: 8, background: C.panel }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: C.copperDark, letterSpacing: 0.4, marginBottom: 8 }}>SHELL 2 — made in the same cycle</div>
-          <label style={lbl}><span>Shell number (follows shell 1) ✎</span>
+          <label style={lbl}><span>Shell number (follows shell 1) <span style={{ color: C.red }}>*</span> ✎</span>
             <input aria-label="Shell 2 number" type="number" min="1" step="1" value={shell2} onChange={e => { setShell2(e.target.value); setTouched(t => ({ ...t, shell2: true })); }} style={inp(!!E('shell2'))} />
             <FieldError msg={E('shell2')} />
           </label>
-          <label style={{ ...lbl, marginTop: 8 }}><span>Weight, kg (same as shell 1) ✎</span>
+          <label style={{ ...lbl, marginTop: 8 }}><span>Weight, kg (same as shell 1) <span style={{ color: C.red }}>*</span> ✎</span>
             <input aria-label="Shell 2 weight (kg)" type="number" min="0" value={w2} onChange={e => { setW2(e.target.value); setTouched(t => ({ ...t, w2: true })); }} style={inp(!!E('weight2'))} />
             <FieldError msg={E('weight2')} />
           </label>
           <div data-testid="code-2" className="font-mono" style={{ marginTop: 10, fontSize: 15, fontWeight: 700, color: C.ink }}>{f && /^\d+$/.test(String(shell2).trim()) ? v.codes[1] : '—'}</div>
         </div>
         <div style={{ padding: 12, border: `1px solid ${C.border}`, borderRadius: 8, background: C.panel }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.copperDark, letterSpacing: 0.4, marginBottom: 8 }}>RAW MATERIAL USED IN THIS HEAT (MT)</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: C.copperDark, letterSpacing: 0.4, marginBottom: 8 }}>RAW MATERIAL USED IN THIS HEAT (kg) <span style={{ fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>· fill in so the casting yield can be worked out</span></div>
           {HEAT_RAW_KINDS.map(kind => {
             const items = (rawItems || []).filter(i => rawKindOf(i) === kind);
             const r = raw[kind] || {};
             const chosen = (r.itemId && items.find(i => i.id === r.itemId)) || items.find(i => Number(i.qty) > 0) || items[0];
             return (
               <div key={kind} data-testid={`raw-row-${kind}`} style={{ marginBottom: 8 }}>
-                <label style={lbl}><span>{kind} — MT used</span>
-                  <input aria-label={`${kind} MT`} type="number" min="0" step="0.001" value={r.mt ?? ''} onChange={e => setRawField(kind, 'mt', e.target.value)} placeholder="0" style={inp(!!E('raw:' + kind))} />
+                <label style={lbl}><span>{kind} — kg used</span>
+                  <input aria-label={`${kind} kg`} type="number" min="0" step="1" value={r.mt ?? ''} onChange={e => setRawField(kind, 'mt', e.target.value)} placeholder="0" style={inp(!!E('raw:' + kind))} />
                 </label>
                 {items.length > 1 && (
                   <select aria-label={`${kind} stock item`} value={chosen?.id || ''} onChange={e => setRawField(kind, 'itemId', e.target.value)} style={{ ...miniInput, marginTop: 4, width: '100%' }}>
@@ -8017,7 +8031,7 @@ function HeatForm({ heats, batches, rawItems, maintenanceLogs, user, onCast, onC
         </div>
       </div>
       <div data-testid="heat-summary" style={{ marginTop: 12, fontSize: 12.5, color: C.subtext, display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-        <span>Raw material <strong className="font-mono" style={{ color: C.ink }}>{v.rawTotalMT} MT</strong></span>
+        <span>Raw material <strong className="font-mono" style={{ color: C.ink }}>{meltKgText(v.rawTotalMT)}</strong></span>
         <span>Shells <strong className="font-mono" style={{ color: C.ink }}>{shellsKg.toLocaleString()} kg</strong></span>
         <span>Casting yield <strong className="font-mono" style={{ color: C.ink }}>{v.rawTotalMT > 0 && shellsKg > 0 ? `${((shellsKg / (v.rawTotalMT * 1000)) * 100).toFixed(1)}%` : '—'}</strong></span>
       </div>
@@ -8044,7 +8058,7 @@ function MeltingDeskPanel({ heats, batches, rawItems, maintenanceLogs }) {
   const tone = { Active: 'green', Idle: 'default', Down: 'red' };
   const fmtKg = (kg) => `${Math.round(kg).toLocaleString()} kg`;
   const rows = [
-    ['Cathode used', r => `${r.raw.Cathode} MT`, 'cathode'], ['Billet used', r => `${r.raw.Billet} MT`, 'billet'], ['Copper rod / coil used', r => `${r.raw['Copper rod / coil']} MT`, 'rod'], ['Raw material used — total', r => `${r.rawTotalMT} MT`, 'rawTotal'],
+    ['Cathode used', r => meltKgText(r.raw.Cathode), 'cathode'], ['Billet used', r => meltKgText(r.raw.Billet), 'billet'], ['Copper rod / coil used', r => meltKgText(r.raw['Copper rod / coil']), 'rod'], ['Raw material used — total', r => meltKgText(r.rawTotalMT), 'rawTotal'],
     ['Shells made', r => `${r.shellsMade} (${fmtKg(r.shellsMadeKg)})`, 'made'], ['Casting yield', r => (r.yieldPct == null ? '—' : `${r.yieldPct.toFixed(1)}%`), 'yield'],
     ['Forwarded to Milling / Rolling', r => `${r.forwarded} (${fmtKg(r.forwardedKg)})`, 'forwarded'], ['Balance at the start of the day', r => `${r.opening} (${fmtKg(r.openingKg)})`, 'opening'],
     ['Shells BALANCE — not yet forwarded', r => `${r.balance} (${fmtKg(r.balanceKg)})`, 'balance'],
@@ -8075,7 +8089,7 @@ function MeltingDeskPanel({ heats, batches, rawItems, maintenanceLogs }) {
               <input aria-label="Melting report day" type="date" value={day} max={today} onChange={e => e.target.value && setDay(e.target.value)} style={miniInput} />
             </label>
             <button type="button" data-testid="melt-yesterday" onClick={() => setDay(addDaysKey(today, -1))} style={dvChip(day === addDaysKey(today, -1))}>Yesterday</button>
-            <ExportButton label="Export" onExport={() => exportToExcel('melting-report.xlsx', { Melting: [rep, repToday].map(r => ({ Date: r.date, 'Cathode MT': r.raw.Cathode, 'Billet MT': r.raw.Billet, 'Rod / coil MT': r.raw['Copper rod / coil'], 'Raw total MT': r.rawTotalMT, 'Shells made': r.shellsMade, 'Shells kg': r.shellsMadeKg, 'Yield %': r.yieldPct == null ? '' : Math.round(r.yieldPct * 10) / 10, 'Forwarded': r.forwarded, 'Opening balance': r.opening, 'Balance': r.balance, 'Balance kg': r.balanceKg })) })} />
+            <ExportButton label="Export" onExport={() => exportToExcel('melting-report.xlsx', { Melting: [rep, repToday].map(r => ({ Date: r.date, 'Cathode kg': Math.round((Number(r.raw.Cathode) || 0) * 1000), 'Billet kg': Math.round((Number(r.raw.Billet) || 0) * 1000), 'Rod / coil kg': Math.round((Number(r.raw['Copper rod / coil']) || 0) * 1000), 'Raw total kg': Math.round((Number(r.rawTotalMT) || 0) * 1000), 'Shells made': r.shellsMade, 'Shells kg': r.shellsMadeKg, 'Yield %': r.yieldPct == null ? '' : Math.round(r.yieldPct * 10) / 10, 'Forwarded': r.forwarded, 'Opening balance': r.opening, 'Balance': r.balance, 'Balance kg': r.balanceKg })) })} />
           </div>
         </div>
         {repOpen && (<>
@@ -8098,7 +8112,7 @@ function MeltingDeskPanel({ heats, batches, rawItems, maintenanceLogs }) {
           </table>
         </div>
         <div data-testid="raw-stock-line" style={{ padding: '10px 16px', borderTop: `1px solid ${C.borderSoft}`, fontSize: 12.5, color: C.subtext }}>
-          Raw material on hand now: Cathode <strong className="font-mono" style={{ color: C.ink }}>{stockMT('Cathode')} MT</strong> · Billet <strong className="font-mono" style={{ color: C.ink }}>{stockMT('Billet')} MT</strong> · Copper rod / coil <strong className="font-mono" style={{ color: C.ink }}>{stockMT('Copper rod / coil')} MT</strong>
+          Raw material on hand now: Cathode <strong className="font-mono" style={{ color: C.ink }}>{meltKgText(stockMT('Cathode'))}</strong> · Billet <strong className="font-mono" style={{ color: C.ink }}>{meltKgText(stockMT('Billet'))}</strong> · Copper rod / coil <strong className="font-mono" style={{ color: C.ink }}>{meltKgText(stockMT('Copper rod / coil'))}</strong>
         </div>
         </>)}
       </Card>
@@ -8121,7 +8135,7 @@ function HeatInfoRow({ batch, heat, canEdit, onEdit }) {
           <strong style={{ color: C.copperDark }}>CAST AT {String(batch.furnace || '').toUpperCase()}</strong> · shell <strong className="font-mono">{batch.shellNo}</strong> · {fmtQty(batch.qty, 'kg')}
           {heat && <> · {formatDateTime(heat.at)} by {heat.by}</>}
           {other && <> · twin shell <span className="font-mono" style={{ fontWeight: 700 }}>{other.code}</span></>}
-          {heat && heat.raw?.totalMT > 0 && <> · heat raw {heat.raw.totalMT} MT</>}
+          {heat && heat.raw?.totalMT > 0 && <> · heat raw {meltKgText(heat.raw.totalMT)}</>}
         </span>
         {canEdit && atMelting && <button type="button" data-testid={`edit-shell-${batch.productionOrderNo}`} onClick={() => setOpen(o => !o)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.steel, fontWeight: 600, fontSize: 12.5 }}>{open ? 'Close' : '✎ Edit shell number / weight'}</button>}
       </div>
@@ -8276,7 +8290,7 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
       )}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         {needsMachine && (
-          <SelectField label={machineLabel} options={machineOptions.length ? ['— choose —', ...machineOptions] : ['— none set up —']} value={machine} onChange={e => setMachine(e.target.value)} />
+          <SelectField req label={machineLabel} options={machineOptions.length ? ['— choose —', ...machineOptions] : ['— none set up —']} value={machine} onChange={e => setMachine(e.target.value)} />
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <TextField label="Scrap qty here (kg, optional)" type="number" min="0" value={scrapQty} onChange={e => setScrapQty(e.target.value)} />
@@ -8646,7 +8660,7 @@ function ScrapForm({ stageLabel, onLog, onClose }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10, padding: 10, background: C.redSoft, borderRadius: 8 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <TextField label={`Scrap qty at ${stageLabel}`} type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} onKeyDown={e => e.key === 'Enter' && !isQuality && submit()} />
+        <TextField req label={`Scrap qty at ${stageLabel}`} type="number" min="0" value={qty} onChange={e => setQty(e.target.value)} onKeyDown={e => e.key === 'Enter' && !isQuality && submit()} />
         <SelectField label="Reason" options={scrapReasonsFor(stageLabel)} value={reason} onChange={e => setReason(e.target.value)} />
       </div>
       {isQuality && (
@@ -8995,7 +9009,7 @@ function HeatGroupBlock({ heat, items, open, onToggle, children }) {
         style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', width: '100%', textAlign: 'left', background: C.copperFaint, border: 'none', padding: '10px 14px', cursor: 'pointer' }}>
         <ChevronRight size={14} style={{ transform: open ? 'rotate(90deg)' : 'none', flexShrink: 0 }} />
         <strong style={{ fontSize: 13, color: C.copperDark }}>HEAT <span className="font-mono">{prefix}</span>{first.furnace ? ` · ${first.furnace}` : ''}</strong>
-        <span style={{ fontSize: 12.5, color: C.subtext }}>{items.length === 1 ? 'shell' : 'shells'} <strong className="font-mono">{items.map(b => b.shellNo).join(' & ')}</strong> · {fmtQty(kg, 'kg')}{heat && heat.raw?.totalMT > 0 ? ` · raw ${heat.raw.totalMT} MT` : ''}{heat ? ` · ${formatDateTime(heat.at)} · ${heat.by}` : ''}</span>
+        <span style={{ fontSize: 12.5, color: C.subtext }}>{items.length === 1 ? 'shell' : 'shells'} <strong className="font-mono">{items.map(b => b.shellNo).join(' & ')}</strong> · {fmtQty(kg, 'kg')}{heat && heat.raw?.totalMT > 0 ? ` · raw ${mtKgText(heat.raw.totalMT)}` : ''}{heat ? ` · ${formatDateTime(heat.at)} · ${heat.by}` : ''}</span>
         <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
           {items.map(b => <Badge key={b.id} tone={b.status === 'Complete' ? 'green' : 'default'}>Shell {b.shellNo}: {b.status === 'Complete' ? 'Complete' : currentStageLabel(b)}</Badge>)}
         </span>
@@ -9210,16 +9224,19 @@ function InventoryAddForm({ fields, onAdd, onClose }) {
 /* =========================================================================
    MASTER TAB (Admin only)
    ========================================================================= */
+// a setting with a scale is stored in MT but shown and typed in kg
+const settingShown = (f, v) => (f.scale && v !== '' && isFinite(Number(v)) ? String(Math.round(Number(v) * f.scale * 1000) / 1000) : String(v));
+const settingStored = (f, txt) => (f.scale && String(txt).trim() !== '' && isFinite(Number(txt)) ? String(Number(txt) / f.scale) : txt);
 function MasterSettingsCard({ title, sub, fields, settings, onSave, testid, footer }) {
   const values = Object.fromEntries(fields.map(f => [f.key, settingValue(settings, f.key)]));
   const sig = JSON.stringify(values);
-  const [draft, setDraft] = useState(() => Object.fromEntries(fields.map(f => [f.key, String(values[f.key])])));
+  const [draft, setDraft] = useState(() => Object.fromEntries(fields.map(f => [f.key, settingShown(f, values[f.key])])));
   const [errors, setErrors] = useState({});
   const [msg, setMsg] = useState('');
-  const dirty = fields.some(f => String(draft[f.key]) !== String(values[f.key]));
-  useEffect(() => { if (!dirty) setDraft(Object.fromEntries(fields.map(f => [f.key, String(values[f.key])]))); }, [sig]);   // follow outside changes while nothing is being typed
+  const dirty = fields.some(f => String(draft[f.key]) !== settingShown(f, values[f.key]));
+  useEffect(() => { if (!dirty) setDraft(Object.fromEntries(fields.map(f => [f.key, settingShown(f, values[f.key])]))); }, [sig]);   // follow outside changes while nothing is being typed
   const save = () => {
-    const r = onSave(Object.fromEntries(fields.map(f => [f.key, draft[f.key]])));
+    const r = onSave(Object.fromEntries(fields.map(f => [f.key, settingStored(f, draft[f.key])])));
     if (r?.errors) { setErrors(r.errors); setMsg(''); } else if (r?.error) { setErrors({ _all: r.error }); setMsg(''); } else { setErrors({}); setMsg(r?.changed ? 'Saved.' : 'Nothing changed.'); }
   };
   return (
@@ -9236,7 +9253,7 @@ function MasterSettingsCard({ title, sub, fields, settings, onSave, testid, foot
                 : <input id={`mf-${f.key}`} aria-label={f.label} type={f.kind === 'time' ? 'time' : 'text'} inputMode={f.kind === 'time' ? undefined : 'decimal'} value={draft[f.key] ?? ''}
                     onChange={e => { setDraft(d => ({ ...d, [f.key]: e.target.value })); setMsg(''); }}
                     style={{ ...miniInput, width: 120, borderColor: errors[f.key] ? C.red : C.border }} />}
-              {String(draft[f.key]) !== String(f.def) && <button type="button" data-testid={`reset-${f.key}`} title={`Reset to the default (${f.def === '' ? 'blank' : f.def})`} onClick={() => { setDraft(d => ({ ...d, [f.key]: String(f.def) })); setMsg(''); }}
+              {String(draft[f.key]) !== settingShown(f, f.def) && <button type="button" data-testid={`reset-${f.key}`} title={`Reset to the default (${f.def === '' ? 'blank' : settingShown(f, f.def)})`} onClick={() => { setDraft(d => ({ ...d, [f.key]: settingShown(f, f.def) })); setMsg(''); }}
                 style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>Reset</button>}
             </div>
             <div style={{ fontSize: 11.5, color: errors[f.key] ? C.red : C.faint }}>{errors[f.key] || f.hint}</div>
@@ -9840,12 +9857,12 @@ function MasterCapacityCard({ capacities, onSave }) {
   return (
     <Card data-testid="master-capacity" style={{ marginBottom: 14 }}>
       <h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600 }}>Monthly capacity per process</h3>
-      <p style={{ fontSize: 12, color: C.subtext, marginTop: 2, marginBottom: 12 }}>MT each process can do in a month. The process plan warns when a month is planned past it and the Daily Report shows how much is used. Leave blank when there is no limit.</p>
+      <p style={{ fontSize: 12, color: C.subtext, marginTop: 2, marginBottom: 12 }}>kg each process can do in a month. The process plan warns when a month is planned past it and the Daily Report shows how much is used. Leave blank when there is no limit.</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '10px 18px' }}>
         {DPR_PROCESS_NAMES.map(p => (
           <label key={p} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, justifyContent: 'space-between' }}>
-            <span style={{ fontWeight: 600 }}>{p} <span style={{ fontWeight: 500, color: C.faint }}>· MT / month</span></span>
-            <input aria-label={`Capacity ${p}`} value={draft[p]} onChange={e => { setDraft(d => ({ ...d, [p]: e.target.value })); setMsg(''); }} style={{ ...miniInput, width: 110, borderColor: errors[p] ? C.red : C.border }} />
+            <span style={{ fontWeight: 600 }}>{p} <span style={{ fontWeight: 500, color: C.faint }}>· kg / month</span></span>
+            <input aria-label={`Capacity ${p}`} value={kgShow(draft[p])} onChange={e => { setDraft(d => ({ ...d, [p]: kgStore(e.target.value) })); setMsg(''); }} style={{ ...miniInput, width: 110, borderColor: errors[p] ? C.red : C.border }} />
           </label>
         ))}
       </div>
@@ -10190,7 +10207,7 @@ function ResolveBreakdownForm({ entry, onResolve, onClose }) {
   return (
     <div style={{ marginTop: 10, padding: 12, background: C.copperFaint, borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
       <TextField label="Resolved at" type="datetime-local" value={resolvedAt} onChange={e => setResolvedAt(e.target.value)} />
-      <TextField label="What fixed it?" value={resolutionNotes} onChange={e => setResolutionNotes(e.target.value)} placeholder="Action taken" />
+      <TextField req label="What fixed it?" value={resolutionNotes} onChange={e => setResolutionNotes(e.target.value)} placeholder="Action taken" />
       {tookLong && (
         <TextField label="Reason it took this long (optional but helpful)" value={delayReason} onChange={e => setDelayReason(e.target.value)} placeholder="e.g. Spare part had to be sourced" />
       )}
@@ -10463,7 +10480,7 @@ function PmTaskForm({ onAdd, onClose }) {
         <TextField label="Machine" list="pm-timed-machines" value={f.machineId} onChange={e => set('machineId', e.target.value)} placeholder="e.g. LWC 1 or Pot 2" required />
         <datalist id="pm-timed-machines">{timedMachines.map(n => <option key={n} value={n} />)}</datalist>
         <TextField label="Task" value={f.taskName} onChange={e => set('taskName', e.target.value)} placeholder="e.g. Lubricate bearings" required />
-        <TextField label="Every (days)" type="number" min="1" value={f.frequencyDays} onChange={e => set('frequencyDays', e.target.value)} />
+        <TextField req label="Every (days) — fill this or the hours below" type="number" min="1" value={f.frequencyDays} onChange={e => set('frequencyDays', e.target.value)} />
         <TextField label="Or every (running hours)" type="number" min="1" value={f.intervalHours} onChange={e => set('intervalHours', e.target.value)} placeholder="e.g. 500" />
       </div>
       <p style={{ fontSize: 11.5, color: C.subtext, margin: '8px 0 0' }}>Set days, running hours, or both (whichever comes first). Running hours are counted from the shop-floor machine runs (LWC / PCC / CTL machines) and annealing pots, from the day the task is added or last done.</p>
@@ -10554,13 +10571,13 @@ function BomForm({ rawItems, onAdd, onClose }) {
     <Card style={{ marginBottom: 14, background: C.panelAlt }}>
       <div>
         <p style={{ fontSize: 12.5, color: C.subtext, marginBottom: 12 }}>
-          Spec must match exactly what's typed on orders/batches (not case-sensitive). Standard yield is what a well-run batch of this spec should achieve — e.g. 92% means 1 MT of good output should need about 1.09 MT of input.
+          Spec must match exactly what's typed on orders/batches (not case-sensitive). Standard yield is what a well-run batch of this spec should achieve — e.g. 92% means 1,000 kg of good output should need about 1,090 kg of input.
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 12 }}>
           <TextField label="Tube spec" list={bomSpecs.length ? 'bom-master-specs' : undefined} autoComplete="off" value={f.spec} onChange={e => set('spec', e.target.value)} onKeyDown={e => e.key === 'Enter' && submit()} placeholder="15mm OD, Cu-DHP, 0.7mm wall" required />
           {bomSpecs.length > 0 && <datalist id="bom-master-specs">{bomSpecs.map(x => <option key={x} value={x} />)}</datalist>}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.subtext, fontWeight: 500 }}>
-            Raw material
+            <span>Raw material <span style={{ color: C.red, fontWeight: 700 }}>*</span></span>
             <select value={f.materialId} onChange={e => set('materialId', e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
               {rawItems.length === 0 && <option value="">— add a raw material in Inventory first —</option>}
               {rawItems.map(r => <option key={r.id} value={r.id}>{r.name} ({r.unit})</option>)}
@@ -10922,21 +10939,21 @@ function RawMaterialRequestsPanel({ orders, rawItems, user }) {
   const persist = next => { setRequests(next); saveShared(KEYS.rawMaterialRequests, next); setMsg('Request list updated.'); };
   const submit = () => {
     const material = (rawItems || []).find(r => r.id === materialId);
-    if (!material || !(Number(qty) > 0) || !requiredDate) { setMsg('Select a raw material, enter a positive quantity in MT and choose a required date.'); return; }
-    const row = { id: uid(), materialId: material.id, materialName: material.name, unit: 'MT', qty: Number(qty), requiredDate, remarks: remarks.trim(), status: 'Submitted', requestedBy: user?.name || user?.email || 'PPC Manager', createdAt: new Date().toISOString(), history: [] };
+    if (!material || !(Number(qty) > 0) || !requiredDate) { setMsg('Select a raw material, enter a positive quantity in kg and choose a required date.'); return; }
+    const row = { id: uid(), materialId: material.id, materialName: material.name, unit: 'kg', qty: Number(qty), requiredDate, remarks: remarks.trim(), status: 'Submitted', requestedBy: user?.name || user?.email || 'PPC Manager', createdAt: new Date().toISOString(), history: [] };
     persist([row, ...requests]); setMaterialId(''); setQty(''); setRequiredDate(''); setRemarks('');
   };
   const updateStatus = (id, status) => persist(requests.map(r => r.id === id ? { ...r, status, updatedBy: user?.name || user?.email, updatedAt: new Date().toISOString(), history: [...(r.history || []), { status, by: user?.name || user?.email, at: new Date().toISOString() }] } : r));
-  return <Card style={{ marginTop: 18 }} data-testid="raw-material-requests"><SectionTitle sub="PPC raises its total raw-material requirement in MT; RM & Supply Chain reviews and tracks procurement.">Raw Material Requests</SectionTitle>
+  return <Card style={{ marginTop: 18 }} data-testid="raw-material-requests"><SectionTitle sub="PPC raises its total raw-material requirement in kg; RM & Supply Chain reviews and tracks procurement.">Raw Material Requests</SectionTitle>
     {canRequest && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, margin: '12px 0' }}>
-      <label style={{ fontSize: 12, color: C.subtext }}>Raw material<select value={materialId} onChange={e => setMaterialId(e.target.value)} style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }}><option value="">Select material</option>{(rawItems || []).map(m => <option key={m.id} value={m.id}>{m.name} (stock {m.qty} {m.unit})</option>)}</select></label>
-      <label style={{ fontSize: 12, color: C.subtext }}>Required quantity (MT)<input type="number" min="0.01" step="0.01" value={qty} onChange={e => setQty(e.target.value)} style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }} /></label>
-      <label style={{ fontSize: 12, color: C.subtext }}>Required by<input type="date" value={requiredDate} onChange={e => setRequiredDate(e.target.value)} style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }} /></label>
+      <label style={{ fontSize: 12, color: C.subtext }}>Raw material <span style={{ color: C.red }}>*</span><select value={materialId} onChange={e => setMaterialId(e.target.value)} style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }}><option value="">Select material</option>{(rawItems || []).map(m => <option key={m.id} value={m.id}>{m.name} (stock {m.qty} {m.unit})</option>)}</select></label>
+      <label style={{ fontSize: 12, color: C.subtext }}>Required quantity (kg) <span style={{ color: C.red }}>*</span><input type="number" min="1" step="1" value={qty} onChange={e => setQty(e.target.value)} style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }} /></label>
+      <label style={{ fontSize: 12, color: C.subtext }}>Required by <span style={{ color: C.red }}>*</span><input type="date" value={requiredDate} onChange={e => setRequiredDate(e.target.value)} style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }} /></label>
       <label style={{ fontSize: 12, color: C.subtext }}>Remarks<input value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="Production requirement / urgency" style={{ ...miniInput, display: 'block', width: '100%', marginTop: 4 }} /></label>
       <div style={{ alignSelf: 'end' }}><Button onClick={submit}>Submit RM request</Button></div>
     </div>}
     {msg && <p role="status" style={{ fontSize: 12, color: C.subtext, marginBottom: 8 }}>{msg}</p>}
-    {!loaded ? <p style={{ fontSize: 12, color: C.subtext }}>Loading shared requests…</p> : requests.length === 0 ? <EmptyState title="No raw-material requests yet" sub="PPC can submit its planned requirement directly in MT; no customer order selection is needed." /> : <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 850 }}><thead><tr style={{ textAlign: 'left', background: C.panelAlt }}>{['Raw material', 'Requested quantity', 'Required by', 'Remarks', 'Requested by', 'Requested on', 'Status', 'Procurement update', ...(user?.role === 'Admin' ? [''] : [])].map(h => <th key={h} style={{ padding: 9 }}>{h}</th>)}</tr></thead><tbody>{requests.map(r => <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}><td style={{ padding: 9 }}>{r.materialName}</td><td style={{ padding: 9 }}>{r.qty} {r.unit || 'MT'}</td><td style={{ padding: 9 }}>{r.requiredDate}</td><td style={{ padding: 9 }}>{r.remarks || '—'}</td><td style={{ padding: 9 }}>{r.requestedBy}</td><td style={{ padding: 9 }}>{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—'}</td><td style={{ padding: 9 }}><Badge>{r.status}</Badge></td><td style={{ padding: 9 }}>{canReview && !['Received', 'Rejected', 'Cancelled'].includes(r.status) ? <select aria-label={`Update request ${r.id}`} value={r.status} onChange={e => updateStatus(r.id, e.target.value)} style={miniInput}>{['Submitted', 'Under Review', 'Approved', 'Ordered', 'Received', 'Rejected', 'Cancelled'].map(x => <option key={x}>{x}</option>)}</select> : r.updatedBy ? `${r.status} · ${r.updatedBy}` : 'Awaiting review'}</td>{user?.role === 'Admin' && <td style={{ padding: 9 }}><ConfirmIconButton title="Delete request" onConfirm={() => persist(requests.filter(req => req.id !== r.id))} /></td>}</tr>)}</tbody></table></div>}
+    {!loaded ? <p style={{ fontSize: 12, color: C.subtext }}>Loading shared requests…</p> : requests.length === 0 ? <EmptyState title="No raw-material requests yet" sub="PPC can submit its planned requirement directly in kg; no customer order selection is needed." /> : <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 850 }}><thead><tr style={{ textAlign: 'left', background: C.panelAlt }}>{['Raw material', 'Requested quantity', 'Required by', 'Remarks', 'Requested by', 'Requested on', 'Status', 'Procurement update', ...(user?.role === 'Admin' ? [''] : [])].map(h => <th key={h} style={{ padding: 9 }}>{h}</th>)}</tr></thead><tbody>{requests.map(r => <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}><td style={{ padding: 9 }}>{r.materialName}</td><td style={{ padding: 9 }}>{r.qty} {r.unit || 'MT'}</td><td style={{ padding: 9 }}>{r.requiredDate}</td><td style={{ padding: 9 }}>{r.remarks || '—'}</td><td style={{ padding: 9 }}>{r.requestedBy}</td><td style={{ padding: 9 }}>{r.createdAt ? new Date(r.createdAt).toLocaleDateString() : '—'}</td><td style={{ padding: 9 }}><Badge>{r.status}</Badge></td><td style={{ padding: 9 }}>{canReview && !['Received', 'Rejected', 'Cancelled'].includes(r.status) ? <select aria-label={`Update request ${r.id}`} value={r.status} onChange={e => updateStatus(r.id, e.target.value)} style={miniInput}>{['Submitted', 'Under Review', 'Approved', 'Ordered', 'Received', 'Rejected', 'Cancelled'].map(x => <option key={x}>{x}</option>)}</select> : r.updatedBy ? `${r.status} · ${r.updatedBy}` : 'Awaiting review'}</td>{user?.role === 'Admin' && <td style={{ padding: 9 }}><ConfirmIconButton title="Delete request" onConfirm={() => persist(requests.filter(req => req.id !== r.id))} /></td>}</tr>)}</tbody></table></div>}
   </Card>;
 }
 
@@ -10967,7 +10984,7 @@ function ExecutiveRMOverview({ rawItems, user, setTab }) {
     </Card>
     <Card data-testid="exec-rm-requests" style={{ padding: 0, overflow: 'hidden' }}>
       <div style={{ padding: '13px 15px', borderBottom: `1px solid ${C.borderSoft}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}><div><h3 className="font-display" style={{ fontSize: 14.5, fontWeight: 600, color: C.ink }}>Raw Material Requests</h3><p style={{ fontSize: 12, color: C.subtext, marginTop: 2 }}>PPC requirements sent to procurement</p></div><Badge tone={openRequests.length ? 'amber' : 'green'}>{openRequests.length} open</Badge></div>
-      {!loaded ? <p style={{ padding: 14, fontSize: 12, color: C.subtext }}>Loading shared requests…</p> : requests.length === 0 ? <EmptyState title="No requests yet" sub="PPC Manager can submit a requirement in MT from Planning." /> : <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 420 }}><thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Material', 'Qty (MT)', 'Required by', 'Status'].map(h => <th key={h} style={{ padding: '8px 10px', color: C.subtext }}>{h}</th>)}</tr></thead><tbody>{requests.slice(0, 8).map(r => <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}><td style={{ padding: '8px 10px', fontWeight: 600 }}>{r.materialName || r.materialType || 'Material'}</td><td style={{ padding: '8px 10px' }}>{Number(r.qty ?? r.requestedQtyMT ?? 0).toLocaleString()}</td><td style={{ padding: '8px 10px' }}>{r.requiredDate || '—'}</td><td style={{ padding: '8px 10px' }}><Badge>{r.status || 'Submitted'}</Badge></td></tr>)}</tbody></table></div>}
+      {!loaded ? <p style={{ padding: 14, fontSize: 12, color: C.subtext }}>Loading shared requests…</p> : requests.length === 0 ? <EmptyState title="No requests yet" sub="PPC Manager can submit a requirement in kg from Planning." /> : <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 420 }}><thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Material', 'Qty', 'Required by', 'Status'].map(h => <th key={h} style={{ padding: '8px 10px', color: C.subtext }}>{h}</th>)}</tr></thead><tbody>{requests.slice(0, 8).map(r => <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}><td style={{ padding: '8px 10px', fontWeight: 600 }}>{r.materialName || r.materialType || 'Material'}</td><td style={{ padding: '8px 10px' }}>{Number(r.qty ?? r.requestedQtyMT ?? 0).toLocaleString()} {r.unit || 'MT'}</td><td style={{ padding: '8px 10px' }}>{r.requiredDate || '—'}</td><td style={{ padding: '8px 10px' }}><Badge>{r.status || 'Submitted'}</Badge></td></tr>)}</tbody></table></div>}
       {canSeeTab(user, 'plan') && <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.borderSoft}` }}><Button variant="secondary" onClick={() => setTab('plan')}>Open Requests</Button></div>}
     </Card>
   </div>;
@@ -11758,18 +11775,18 @@ function TrendsTab({ dailyPlans, batches, downtimeLogs, maintenanceLogs, setting
           <div>
             <h3 className="font-display" style={{ fontSize: 15, fontWeight: 600, color: C.ink, marginBottom: 4 }}>This month's capacity</h3>
             <div className="font-mono" style={{ fontSize: 24, fontWeight: 700, color: C.ink }}>
-              {monthToDateActual.toLocaleString()} <span style={{ fontSize: 13, color: C.faint, fontWeight: 500 }}>/ {target.toLocaleString()} MT target</span>
+              {mtToKg(monthToDateActual).toLocaleString()} <span style={{ fontSize: 13, color: C.faint, fontWeight: 500 }}>/ {mtToKg(target).toLocaleString()} kg target</span>
             </div>
             <div style={{ height: 6, background: C.borderSoft, borderRadius: 4, marginTop: 8, width: 260, maxWidth: '100%', overflow: 'hidden' }}>
               <div style={{ height: '100%', width: `${monthPct}%`, background: monthPct >= 90 ? C.green : monthPct >= 60 ? C.amber : C.copper, borderRadius: 4 }} />
             </div>
             <p style={{ fontSize: 12.5, color: C.subtext, marginTop: 8 }}>
-              At this pace, projected month-end: <strong style={{ color: projected >= target ? C.green : C.red }}>{projected.toLocaleString()} MT</strong>
+              At this pace, projected month-end: <strong style={{ color: projected >= target ? C.green : C.red }}>{mtKgText(projected)}</strong>
             </p>
           </div>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12.5, color: C.subtext, fontWeight: 500 }}>
-            Monthly target (MT)
-            <input type="number" min="0" defaultValue={target} onBlur={e => onUpdateSettings({ monthlyTargetMT: Number(e.target.value) || 0 })}
+            Monthly target (kg)
+            <input type="number" min="0" defaultValue={mtToKg(target)} onBlur={e => onUpdateSettings({ monthlyTargetMT: (Number(e.target.value) || 0) / 1000 })}
               style={{ width: 130, padding: '7px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13.5 }} />
           </label>
         </div>
@@ -11783,7 +11800,7 @@ function TrendsTab({ dailyPlans, batches, downtimeLogs, maintenanceLogs, setting
           </p>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
             <div className="font-mono" style={{ fontSize: 24, fontWeight: 700, color: C.ink }}>
-              ~{Math.round(forecast7d.projectedTotal).toLocaleString()} MT
+              ~{mtKgText(forecast7d.projectedTotal)}
             </div>
             <Badge tone={forecast7d.trendingUp ? 'green' : forecast7d.trendingDown ? 'red' : 'default'}>
               {forecast7d.trendingUp ? 'Trending up' : forecast7d.trendingDown ? 'Trending down' : 'Steady'}
@@ -12014,9 +12031,14 @@ function DprHeaderBar({ date, setDate, shift, setShift, extra, shifts = SHIFTS }
   );
 }
 
-function MiniInput({ value, onChange, width = 76, placeholder, step = '0.01', label }) {
+// Quantities are kept in MT; with scale={1000} an input shows and takes kg, and hands MT back to the code that saves it.
+const kgShow = (v) => (v === '' || v == null || !isFinite(Number(v)) ? (v ?? '') : String(Math.round(Number(v) * 1e6) / 1e3));
+const kgStore = (t) => (t === '' || t == null || !isFinite(Number(t)) ? t : String(Number(t) / 1000));
+const mtKgNum = (v) => (v == null || v === '' || !isFinite(Number(v)) ? '—' : (Math.round(Number(v) * 1000)).toLocaleString());
+const mtKgVal = (v) => (v === '' || v == null || !isFinite(Number(v)) ? v : Math.round(Number(v) * 1e6) / 1e3);
+function MiniInput({ value, onChange, width = 76, placeholder, step = '0.01', label, scale }) {
   return (
-    <input type="number" step={step} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} aria-label={label}
+    <input type="number" step={scale ? '1' : step} value={scale ? kgShow(value) : (value ?? '')} onChange={e => onChange(scale ? kgStore(e.target.value) : e.target.value)} placeholder={scale && placeholder != null && isFinite(Number(placeholder)) ? kgShow(placeholder) : placeholder} aria-label={label}
       className="font-mono" style={{ width, padding: '6px 7px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 12.5 }} />
   );
 }
@@ -12150,23 +12172,23 @@ function buildDprWorkbook({ date, shift, dprEntries, machineProd, dq, wipBuffer,
   // 1. Production & machine productivity (with OEE)
   const prod = machines.map(c => ({
     Date: date, Shift: shift, Process: c.process, Machine: c.machineId,
-    'Plan (MT)': num(c.r.planOutput), 'Actual (MT)': num(c.r.actualOutput), 'Achiev %': rp(c.achievement),
+    'Plan (kg)': mtKgVal(num(c.r.planOutput)), 'Actual (kg)': mtKgVal(num(c.r.actualOutput)), 'Achiev %': rp(c.achievement),
     'Start WT': num(c.r.shiftStartWT), 'End WT': num(c.r.shiftEndWT),
-    'Input (MT)': num(c.r.input), 'Good output (MT)': num(c.r.goodOutput), 'Scrap/Trim (MT)': num(c.r.scrapTrim), 'Yield %': rp(c.yieldPct),
+    'Input (kg)': mtKgVal(num(c.r.input)), 'Good output (kg)': mtKgVal(num(c.r.goodOutput)), 'Scrap/Trim (kg)': mtKgVal(num(c.r.scrapTrim)), 'Yield %': rp(c.yieldPct),
     'Run (h)': num(c.r.runTime), 'Downtime (h)': num(c.r.downtime),
     'Availability %': rp(c.availability), 'Performance %': rp(c.performance), 'Quality %': rp(c.quality), 'OEE %': rp(c.oee),
-    'Speed (MT/h)': Number(c.r.runTime) > 0 ? Number((Number(c.r.goodOutput || 0) / Number(c.r.runTime)).toFixed(2)) : '',
+    'Speed (kg/h)': Number(c.r.runTime) > 0 ? Math.round(Number(c.r.goodOutput || 0) / Number(c.r.runTime) * 1000) : '',
     'Downtime reason': c.r.downtimeReason || '', Remarks: c.r.remarks || '',
   }));
   const T = machines.reduce((a, c) => { const n = (v) => Number(v) || 0; return { plan: a.plan + n(c.r.planOutput), actual: a.actual + n(c.r.actualOutput), input: a.input + n(c.r.input), good: a.good + n(c.r.goodOutput), scrap: a.scrap + n(c.r.scrapTrim), run: a.run + n(c.r.runTime), down: a.down + n(c.r.downtime) }; }, { plan: 0, actual: 0, input: 0, good: 0, scrap: 0, run: 0, down: 0 });
   const tO = dprOee({ runTime: T.run, downtime: T.down, planOutput: T.plan, actualOutput: T.actual, goodOutput: T.good, input: T.input });
-  prod.push({ Date: date, Shift: shift, Process: 'SHIFT TOTAL', Machine: '', 'Plan (MT)': T.plan, 'Actual (MT)': T.actual, 'Achiev %': rp(pct(T.actual, T.plan)), 'Input (MT)': T.input, 'Good output (MT)': T.good, 'Scrap/Trim (MT)': T.scrap, 'Yield %': rp(pct(T.good, T.input)), 'Run (h)': T.run, 'Downtime (h)': T.down, 'Availability %': rp(tO.availability), 'Performance %': rp(tO.performance), 'Quality %': rp(tO.quality), 'OEE %': rp(tO.oee) });
+  prod.push({ Date: date, Shift: shift, Process: 'SHIFT TOTAL', Machine: '', 'Plan (kg)': mtKgVal(T.plan), 'Actual (kg)': mtKgVal(T.actual), 'Achiev %': rp(pct(T.actual, T.plan)), 'Input (kg)': mtKgVal(T.input), 'Good output (kg)': mtKgVal(T.good), 'Scrap/Trim (kg)': mtKgVal(T.scrap), 'Yield %': rp(pct(T.good, T.input)), 'Run (h)': T.run, 'Downtime (h)': T.down, 'Availability %': rp(tO.availability), 'Performance %': rp(tO.performance), 'Quality %': rp(tO.quality), 'OEE %': rp(tO.oee) });
   sheets['Production & Machine'] = prod;
   // 2. Downtime & quality
   const data = (dq || {})[key] || { downtime: [], quality: [] };
   const mins = (r) => { if (!r.startTime || !r.endTime) return ''; const [a, b] = r.startTime.split(':').map(Number), [c, d] = r.endTime.split(':').map(Number); const m = (c * 60 + d) - (a * 60 + b); return m > 0 ? m : 0; };
   sheets['Downtime'] = (data.downtime || []).map(r => ({ Date: date, Shift: shift, Machine: r.machineId, Process: r.process || '', Start: r.startTime, End: r.endTime, 'Duration (min)': mins(r), Category: r.category, 'Sub-category': r.subCategory || '', 'Root cause': r.rootCause || '', 'Action taken': r.actionTaken || '', Responsible: r.responsible || '', Status: r.status || '', 'Verified by': r.verifiedBy || '' }));
-  sheets['Quality'] = (data.quality || []).map(r => ({ Date: date, Shift: shift, Machine: r.machineId, Process: r.process || '', 'Product code': r.productCode || '', 'Defect type': r.defectType, 'Qty (MT)': num(r.qty), 'Sample qty': num(r.sampleQty), 'Defect qty': num(r.defectQty), 'Defect %': Number(r.sampleQty) > 0 ? rp((Number(r.defectQty) || 0) / Number(r.sampleQty) * 100) : '', Disposition: r.disposition || '', Inspector: r.inspector || '', Time: r.time || '', Action: r.action || '' }));
+  sheets['Quality'] = (data.quality || []).map(r => ({ Date: date, Shift: shift, Machine: r.machineId, Process: r.process || '', 'Product code': r.productCode || '', 'Defect type': r.defectType, 'Qty (kg)': mtKgVal(num(r.qty)), 'Sample qty': num(r.sampleQty), 'Defect qty': num(r.defectQty), 'Defect %': Number(r.sampleQty) > 0 ? rp((Number(r.defectQty) || 0) / Number(r.sampleQty) * 100) : '', Disposition: r.disposition || '', Inspector: r.inspector || '', Time: r.time || '', Action: r.action || '' }));
   // 3. WIP / buffer
   const wip = computeWip(batches);
   const dayW = wipBuffer?.days?.[date] || {}, limits = wipBuffer?.limits || {};
@@ -12200,15 +12222,15 @@ function buildDprWorkbook({ date, shift, dprEntries, machineProd, dq, wipBuffer,
     let mp = 0, ma = 0;
     dayKeys.forEach(d => { const r = resolveTargetActual(((targetActual || {})[d] || {})[cat], (autoByDay[d] || {})[cat]); mp += r.plan; ma += r.actual; });
     tt = { dp: tt.dp + res.plan, da: tt.da + res.actual, mp: tt.mp + mp, ma: tt.ma + ma };
-    return { Date: date, 'Process / Product': cat, 'Daily plan (MT)': res.plan, 'Plan source': res.planSource || '', 'Daily actual (MT)': res.actual, 'Actual source': res.actualSource || '', 'Daily achiev %': rp(pct(res.actual, res.plan)), 'MTD plan (MT)': mp, 'MTD actual (MT)': ma, 'MTD achiev %': rp(pct(ma, mp)), 'Gap (MT)': Number((res.actual - res.plan).toFixed(3)) };
+    return { Date: date, 'Process / Product': cat, 'Daily plan (kg)': mtKgVal(res.plan), 'Plan source': res.planSource || '', 'Daily actual (kg)': mtKgVal(res.actual), 'Actual source': res.actualSource || '', 'Daily achiev %': rp(pct(res.actual, res.plan)), 'MTD plan (kg)': mtKgVal(mp), 'MTD actual (kg)': mtKgVal(ma), 'MTD achiev %': rp(pct(ma, mp)), 'Gap (kg)': mtKgVal(Number((res.actual - res.plan).toFixed(3))) };
   });
-  ta.push({ Date: date, 'Process / Product': 'TOTAL', 'Daily plan (MT)': tt.dp, 'Daily actual (MT)': tt.da, 'Daily achiev %': rp(pct(tt.da, tt.dp)), 'MTD plan (MT)': tt.mp, 'MTD actual (MT)': tt.ma, 'MTD achiev %': rp(pct(tt.ma, tt.mp)), 'Gap (MT)': Number((tt.da - tt.dp).toFixed(3)) });
+  ta.push({ Date: date, 'Process / Product': 'TOTAL', 'Daily plan (kg)': mtKgVal(tt.dp), 'Daily actual (kg)': mtKgVal(tt.da), 'Daily achiev %': rp(pct(tt.da, tt.dp)), 'MTD plan (kg)': mtKgVal(tt.mp), 'MTD actual (kg)': mtKgVal(tt.ma), 'MTD achiev %': rp(pct(tt.ma, tt.mp)), 'Gap (kg)': mtKgVal(Number((tt.da - tt.dp).toFixed(3))) });
   sheets['Target vs Actual'] = ta;
   // 5. Monthly capacity
   const mt = dprMonthTotals(mk, ctx, dayStart, nightStart);
   sheets['Monthly capacity'] = DPR_PROCESS_NAMES.map(pr => {
     const cap = capacityStatus((capacities || {})[pr], mt[pr].actual);
-    return { Month: mk, Process: pr, 'Monthly capacity (MT)': cap ? cap.capacity : '', 'Done so far (MT)': mt[pr].actual, 'Used %': cap ? cap.pct : '', 'Planned (MT)': mt[pr].plan, 'Left (MT)': cap ? cap.left : '', 'Over by (MT)': cap && cap.over ? cap.overBy : '' };
+    return { Month: mk, Process: pr, 'Monthly capacity (kg)': cap ? mtKgVal(cap.capacity) : '', 'Done so far (kg)': mtKgVal(mt[pr].actual), 'Used %': cap ? cap.pct : '', 'Planned (kg)': mtKgVal(mt[pr].plan), 'Left (kg)': cap ? mtKgVal(cap.left) : '', 'Over by (kg)': cap && cap.over ? mtKgVal(cap.overBy) : '' };
   });
   return sheets;
 }
@@ -12225,18 +12247,18 @@ function DprCapacitySection({ ctx, capacities, dayStart, nightStart, date }) {
       <Card style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }}>
-            <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Process', 'Monthly capacity (MT)', 'Done so far (MT)', 'Used', 'Planned (MT)', 'Left (MT)'].map(h => <th key={h} style={{ padding: '9px 12px', fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
+            <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Process', 'Monthly capacity (kg)', 'Done so far (kg)', 'Used', 'Planned (kg)', 'Left (kg)'].map(h => <th key={h} style={{ padding: '9px 12px', fontSize: 11, color: C.subtext, fontWeight: 700, textTransform: 'uppercase' }}>{h}</th>)}</tr></thead>
             <tbody>
               {DPR_PROCESS_NAMES.map(pr => {
                 const cap = capacityStatus((capacities || {})[pr], totals[pr].actual);
                 return (
                   <tr key={pr} data-testid={`cap-row-${pr}`} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                     <td style={{ padding: '9px 12px', fontWeight: 600 }}>{pr}</td>
-                    <td className="font-mono" style={{ padding: '9px 12px' }}>{cap ? cap.capacity.toLocaleString() : <span style={{ color: C.faint }}>not set</span>}</td>
-                    <td className="font-mono" data-cell="done" style={{ padding: '9px 12px' }}>{totals[pr].actual}</td>
+                    <td className="font-mono" style={{ padding: '9px 12px' }}>{cap ? mtKgNum(cap.capacity) : <span style={{ color: C.faint }}>not set</span>}</td>
+                    <td className="font-mono" data-cell="done" style={{ padding: '9px 12px' }}>{mtKgNum(totals[pr].actual)}</td>
                     <td className="font-mono" data-cell="used" style={{ padding: '9px 12px', color: cap && cap.over ? C.red : C.ink, fontWeight: 600 }}>{cap ? `${cap.pct}%` : '—'}</td>
-                    <td className="font-mono" data-cell="planned" style={{ padding: '9px 12px' }}>{totals[pr].plan}</td>
-                    <td className="font-mono" data-cell="left" style={{ padding: '9px 12px' }}>{cap ? (cap.over ? `over by ${cap.overBy}` : cap.left) : '—'}</td>
+                    <td className="font-mono" data-cell="planned" style={{ padding: '9px 12px' }}>{mtKgNum(totals[pr].plan)}</td>
+                    <td className="font-mono" data-cell="left" style={{ padding: '9px 12px' }}>{cap ? (cap.over ? `over by ${mtKgNum(cap.overBy)}` : mtKgNum(cap.left)) : '—'}</td>
                   </tr>
                 );
               })}
@@ -12288,15 +12310,15 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
             <div data-testid="dpr-fix-form" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 10 }}>
               <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>Machine<select aria-label="Correct machine" value={fix.machineId} onChange={e => setFix(f => ({ ...f, machineId: e.target.value }))} style={miniInput}><option value="">— choose —</option>{DPR_MACHINE_ROWS.map(r => <option key={r.machineId}>{r.machineId}</option>)}</select></label>
               <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>Figure<select aria-label="Correct figure" value={fix.field} onChange={e => setFix(f => ({ ...f, field: e.target.value }))} style={miniInput}><option value="planOutput">Plan</option><option value="actualOutput">Actual</option></select></label>
-              <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>New MT<input aria-label="Correct value" value={fix.value} onChange={e => setFix(f => ({ ...f, value: e.target.value }))} style={{ ...miniInput, width: 90 }} /></label>
+              <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>New value (kg)<input aria-label="Correct value" value={fix.value} onChange={e => setFix(f => ({ ...f, value: e.target.value }))} style={{ ...miniInput, width: 90 }} /></label>
               <label style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>Reason<input aria-label="Correct reason" value={fix.reason} onChange={e => setFix(f => ({ ...f, reason: e.target.value }))} style={{ ...miniInput, width: 240 }} /></label>
-              <Button onClick={() => { const r = onCorrectClosed(`${date}::${shift}`, fix.machineId, fix.field, fix.value, fix.reason); if (r?.error) setFixErr(r.error); else { setFixErr(''); setFix({ machineId: '', field: 'actualOutput', value: '', reason: '' }); setFixOpen(false); } }}>Save correction</Button>
+              <Button onClick={() => { const r = onCorrectClosed(`${date}::${shift}`, fix.machineId, fix.field, kgStore(fix.value), fix.reason); if (r?.error) setFixErr(r.error); else { setFixErr(''); setFix({ machineId: '', field: 'actualOutput', value: '', reason: '' }); setFixOpen(false); } }}>Save correction</Button>
               {fixErr && <span role="alert" data-testid="dpr-fix-error" style={{ color: C.red, fontSize: 12.5 }}>{fixErr}</span>}
             </div>
           )}
           {(closed.corrections || []).length > 0 && (
             <ul data-testid="dpr-corrections" style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 12, color: C.subtext }}>
-              {(closed.corrections || []).map((c, i) => <li key={i}>{formatDateTime(c.at)} · {c.by}: {c.machineId} {c.field === 'planOutput' ? 'plan' : 'actual'} {c.from ?? '—'} → {c.to} MT — {c.reason}</li>)}
+              {(closed.corrections || []).map((c, i) => <li key={i}>{formatDateTime(c.at)} · {c.by}: {c.machineId} {c.field === 'planOutput' ? 'plan' : 'actual'} {mtKgNum(c.from)} → {mtKgNum(c.to)} kg — {c.reason}</li>)}
             </ul>
           )}
         </Card>
@@ -12319,7 +12341,7 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
           <table data-testid="dpr-unified-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 1750 }}>
             <thead>
               <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                {['Process', 'Machine', 'Plan (MT)', 'Actual (MT)', 'Achiev %', 'Start WT', 'End WT', 'Input (MT)', 'Good Output', 'Scrap/Trim', 'Yield %', 'Run (h)', 'Downtime (h)', 'Avail %', 'Perf %', 'Qual %', 'OEE %', 'Speed (MT/h)', 'Downtime reason', 'Remarks'].map(h => (
+                {['Process', 'Machine', 'Plan (kg)', 'Actual (kg)', 'Achiev %', 'Start WT', 'End WT', 'Input (kg)', 'Good Output (kg)', 'Scrap/Trim (kg)', 'Yield %', 'Run (h)', 'Downtime (h)', 'Avail %', 'Perf %', 'Qual %', 'OEE %', 'Speed (kg/h)', 'Downtime reason', 'Remarks'].map(h => (
                   <th key={h} style={{ padding: '8px 10px', fontSize: 10.5, color: C.subtext, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -12333,17 +12355,17 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
                     <td style={{ padding: '6px 10px', fontWeight: 600, color: C.ink, whiteSpace: 'nowrap' }}>{showProcess ? c.process : ''}</td>
                     <td style={{ padding: '6px 10px', fontWeight: 600, color: C.copperDark, whiteSpace: 'nowrap' }}>{c.machineId}</td>
                     <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{closed
-                      ? <span data-testid={`closed-plan-${c.machineId}`} className="font-mono" title={`saved when the shift ended (${c.sr.planSource || 'auto'})`}>{c.r.planOutput ?? '—'}{c.sr.planSource === 'corrected' ? ' ✎' : ''}</span>
-                      : <><MiniInput label={`Plan ${c.machineId}`} value={c.typed.planOutput} onChange={v => setRow(c.machineId, 'planOutput', v)} width={64} placeholder={auto[c.machineId]?.planOutput !== undefined ? String(auto[c.machineId].planOutput) : undefined} />{!hasVal(c.typed.planOutput) && auto[c.machineId]?.planOutput !== undefined && <span data-testid={`auto-plan-${c.machineId}`} style={{ marginLeft: 4, fontSize: 10, color: C.green, fontWeight: 700 }}>auto</span>}</>}</td>
+                      ? <span data-testid={`closed-plan-${c.machineId}`} className="font-mono" title={`saved when the shift ended (${c.sr.planSource || 'auto'})`}>{mtKgNum(c.r.planOutput)}{c.sr.planSource === 'corrected' ? ' ✎' : ''}</span>
+                      : <><MiniInput label={`Plan ${c.machineId}`} value={c.typed.planOutput} onChange={v => setRow(c.machineId, 'planOutput', v)} width={64} scale={1000} placeholder={auto[c.machineId]?.planOutput !== undefined ? String(auto[c.machineId].planOutput) : undefined} />{!hasVal(c.typed.planOutput) && auto[c.machineId]?.planOutput !== undefined && <span data-testid={`auto-plan-${c.machineId}`} style={{ marginLeft: 4, fontSize: 10, color: C.green, fontWeight: 700 }}>auto</span>}</>}</td>
                     <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>{closed
-                      ? <span data-testid={`closed-actual-${c.machineId}`} className="font-mono" title={`saved when the shift ended (${c.sr.actualSource || 'auto'})`}>{c.r.actualOutput ?? '—'}{c.sr.actualSource === 'corrected' ? ' ✎' : ''}</span>
-                      : <><MiniInput label={`Actual ${c.machineId}`} value={c.typed.actualOutput} onChange={v => setRow(c.machineId, 'actualOutput', v)} width={64} placeholder={auto[c.machineId]?.actualOutput !== undefined ? String(auto[c.machineId].actualOutput) : undefined} />{!hasVal(c.typed.actualOutput) && auto[c.machineId]?.actualOutput !== undefined && <span data-testid={`auto-actual-${c.machineId}`} style={{ marginLeft: 4, fontSize: 10, color: C.green, fontWeight: 700 }}>auto</span>}</>}</td>
+                      ? <span data-testid={`closed-actual-${c.machineId}`} className="font-mono" title={`saved when the shift ended (${c.sr.actualSource || 'auto'})`}>{mtKgNum(c.r.actualOutput)}{c.sr.actualSource === 'corrected' ? ' ✎' : ''}</span>
+                      : <><MiniInput label={`Actual ${c.machineId}`} value={c.typed.actualOutput} onChange={v => setRow(c.machineId, 'actualOutput', v)} width={64} scale={1000} placeholder={auto[c.machineId]?.actualOutput !== undefined ? String(auto[c.machineId].actualOutput) : undefined} />{!hasVal(c.typed.actualOutput) && auto[c.machineId]?.actualOutput !== undefined && <span data-testid={`auto-actual-${c.machineId}`} style={{ marginLeft: 4, fontSize: 10, color: C.green, fontWeight: 700 }}>auto</span>}</>}</td>
                     <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.achievement != null && c.achievement < 90 ? C.red : C.green }}>{fmtPct(c.achievement)}</td>
                     <td style={{ padding: '6px 10px' }}><MiniInput label={`Start WT ${c.machineId}`} value={c.r.shiftStartWT} onChange={v => setRow(c.machineId, 'shiftStartWT', v)} width={64} /></td>
                     <td style={{ padding: '6px 10px' }}><MiniInput label={`End WT ${c.machineId}`} value={c.r.shiftEndWT} onChange={v => setRow(c.machineId, 'shiftEndWT', v)} width={64} /></td>
-                    <td style={{ padding: '6px 10px' }}><MiniInput label={`Input ${c.machineId}`} value={c.r.input} onChange={v => setRow(c.machineId, 'input', v)} width={64} /></td>
-                    <td style={{ padding: '6px 10px' }}><MiniInput label={`Good output ${c.machineId}`} value={c.r.goodOutput} onChange={v => setRow(c.machineId, 'goodOutput', v)} width={64} /></td>
-                    <td style={{ padding: '6px 10px' }}><MiniInput label={`Scrap ${c.machineId}`} value={c.r.scrapTrim} onChange={v => setRow(c.machineId, 'scrapTrim', v)} width={64} /></td>
+                    <td style={{ padding: '6px 10px' }}><MiniInput label={`Input ${c.machineId}`} value={c.r.input} onChange={v => setRow(c.machineId, 'input', v)} width={64} scale={1000} /></td>
+                    <td style={{ padding: '6px 10px' }}><MiniInput label={`Good output ${c.machineId}`} value={c.r.goodOutput} onChange={v => setRow(c.machineId, 'goodOutput', v)} width={64} scale={1000} /></td>
+                    <td style={{ padding: '6px 10px' }}><MiniInput label={`Scrap ${c.machineId}`} value={c.r.scrapTrim} onChange={v => setRow(c.machineId, 'scrapTrim', v)} width={64} scale={1000} /></td>
                     <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.yieldPct != null && c.yieldPct < 95 ? C.red : C.green }}>{fmtPct(c.yieldPct)}</td>
                     <td style={{ padding: '6px 10px' }}><MiniInput label={`Run ${c.machineId}`} value={c.r.runTime} onChange={v => setRow(c.machineId, 'runTime', v)} width={56} step="0.1" /></td>
                     <td style={{ padding: '6px 10px' }}><MiniInput label={`Downtime ${c.machineId}`} value={c.r.downtime} onChange={v => setRow(c.machineId, 'downtime', v)} width={56} step="0.1" /></td>
@@ -12351,7 +12373,7 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
                     <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtPct(c.performance)}</td>
                     <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtPct(c.quality)}</td>
                     <td className="font-mono" data-testid={`oee-${c.machineId}`} title="OEE = Availability x Performance x Quality" style={{ padding: '6px 10px', fontWeight: 700, color: c.oee == null ? C.faint : c.oee < 65 ? C.red : c.oee < 85 ? C.amber : C.green }}>{fmtPct(c.oee)}</td>
-                    <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{fmtNum(speed, 1)}</td>
+                    <td className="font-mono" style={{ padding: '6px 10px', color: C.subtext }}>{mtKgNum(speed)}</td>
                     <td style={{ padding: '6px 10px' }}><MiniText label={`Downtime reason ${c.machineId}`} value={c.r.downtimeReason} onChange={v => setRow(c.machineId, 'downtimeReason', v)} width={130} /></td>
                     <td style={{ padding: '6px 10px' }}><MiniText label={`Remarks ${c.machineId}`} value={c.r.remarks} onChange={v => setRow(c.machineId, 'remarks', v)} width={110} /></td>
                   </tr>
@@ -12361,13 +12383,13 @@ function DprProductionSection({ dprEntries, machineProd, onUpdateDpr, date, shif
             <tfoot>
               <tr style={{ borderTop: `2px solid ${C.border}`, background: C.panelAlt, fontWeight: 700 }}>
                 <td style={{ padding: '8px 10px' }} colSpan={2}>SHIFT TOTAL</td>
-                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.planOutput)}</td>
-                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.actualOutput)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.planOutput)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.actualOutput)}</td>
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(pct(totals.actualOutput, totals.planOutput))}</td>
                 <td colSpan={2}></td>
-                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.input)}</td>
-                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.goodOutput)}</td>
-                <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.scrapTrim)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.input)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.goodOutput)}</td>
+                <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.scrapTrim)}</td>
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(pct(totals.goodOutput, totals.input))}</td>
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.runTime, 1)}</td>
                 <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.downtime, 1)}</td>
@@ -12425,7 +12447,7 @@ function QualityDefectForm({ onAdd, onClose }) {
         <TextField label="Process" value={f.process} onChange={e => set('process', e.target.value)} />
         <TextField label="Product code" value={f.productCode} onChange={e => set('productCode', e.target.value)} />
         <TextField label="Defect type" value={f.defectType} onChange={e => set('defectType', e.target.value)} required />
-        <TextField label="Qty (MT)" type="number" step="0.01" value={f.qty} onChange={e => set('qty', e.target.value)} />
+        <TextField label="Qty (kg)" type="number" step="1" value={kgShow(f.qty)} onChange={e => set('qty', kgStore(e.target.value))} />
         <TextField label="Sample qty" type="number" value={f.sampleQty} onChange={e => set('sampleQty', e.target.value)} />
         <TextField label="Defect qty" type="number" value={f.defectQty} onChange={e => set('defectQty', e.target.value)} />
         <SelectField label="Disposition" options={DPR_DISPOSITIONS} value={f.disposition} onChange={e => set('disposition', e.target.value)} />
@@ -12713,7 +12735,7 @@ function TargetActualSection({ targetActual, onUpdate, date, spinnerPlans, batch
   return (
     <Card style={{ padding: 0, overflow: 'hidden' }}>
       <p data-testid="ta-explainer" style={{ fontSize: 12, color: C.subtext, padding: '14px 14px 0' }}>
-        All values in MT. <strong>Plan</strong> comes from the Production Plan; <strong>actual</strong> comes from Stage Tracking (what each process finished that day), or the Daily Report where Stage Tracking has nothing.
+        All values in kg. <strong>Plan</strong> comes from the Production Plan; <strong>actual</strong> comes from Stage Tracking (what each process finished that day), or the Daily Report where Stage Tracking has nothing.
         Type a number only to override the automatic one. Month-to-date adds up every day of the month automatically.
       </p>
       <div style={{ overflowX: 'auto' }}>
@@ -12729,35 +12751,35 @@ function TargetActualSection({ targetActual, onUpdate, date, spinnerPlans, batch
                 <td style={{ padding: '6px 10px', fontWeight: 600, whiteSpace: 'nowrap' }}>{c.cat}</td>
                 <td style={{ padding: '6px 10px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="font-mono" data-cell="plan" style={{ minWidth: 44, fontWeight: 700 }}>{fmtNum(c.res.plan)}</span>
+                    <span className="font-mono" data-cell="plan" style={{ minWidth: 44, fontWeight: 700 }}>{mtKgNum(c.res.plan)}</span>
                     <Badge tone={srcTone(c.res.planSource)}>{c.res.planSource || 'none'}</Badge>
                   </div>
-                  <MiniInput label={`Daily plan ${c.cat}`} value={c.r.dailyPlan} onChange={v => setField(c.cat, 'dailyPlan', v)} width={70} placeholder="override" />
+                  <MiniInput label={`Daily plan ${c.cat}`} value={c.r.dailyPlan} onChange={v => setField(c.cat, 'dailyPlan', v)} width={70} scale={1000} placeholder="override" />
                 </td>
                 <td style={{ padding: '6px 10px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span className="font-mono" data-cell="actual" style={{ minWidth: 44, fontWeight: 700 }}>{fmtNum(c.res.actual)}</span>
+                    <span className="font-mono" data-cell="actual" style={{ minWidth: 44, fontWeight: 700 }}>{mtKgNum(c.res.actual)}</span>
                     <Badge tone={srcTone(c.res.actualSource)}>{c.res.actualSource || 'none'}</Badge>
                   </div>
-                  <MiniInput label={`Daily actual ${c.cat}`} value={c.r.dailyActual} onChange={v => setField(c.cat, 'dailyActual', v)} width={70} placeholder="override" />
+                  <MiniInput label={`Daily actual ${c.cat}`} value={c.r.dailyActual} onChange={v => setField(c.cat, 'dailyActual', v)} width={70} scale={1000} placeholder="override" />
                 </td>
                 <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.dailyAchiev != null && c.dailyAchiev < 90 ? C.red : C.green }}>{fmtPct(c.dailyAchiev)}</td>
-                <td className="font-mono" data-cell="mtd-plan" style={{ padding: '6px 10px', color: C.subtext }}>{fmtNum(c.mtd.plan)}</td>
-                <td className="font-mono" data-cell="mtd-actual" style={{ padding: '6px 10px', color: C.subtext }}>{fmtNum(c.mtd.actual)}</td>
+                <td className="font-mono" data-cell="mtd-plan" style={{ padding: '6px 10px', color: C.subtext }}>{mtKgNum(c.mtd.plan)}</td>
+                <td className="font-mono" data-cell="mtd-actual" style={{ padding: '6px 10px', color: C.subtext }}>{mtKgNum(c.mtd.actual)}</td>
                 <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700 }}>{fmtPct(c.mtdAchiev)}</td>
-                <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.gap >= 0 ? C.green : C.red }}>{c.gap >= 0 ? '+' : ''}{fmtNum(c.gap)}</td>
+                <td className="font-mono" style={{ padding: '6px 10px', fontWeight: 700, color: c.gap >= 0 ? C.green : C.red }}>{c.gap >= 0 ? '+' : ''}{mtKgNum(c.gap)}</td>
               </tr>
             ))}
           </tbody>
           <tfoot><tr style={{ borderTop: `2px solid ${C.border}`, background: C.panelAlt, fontWeight: 700 }}>
             <td style={{ padding: '8px 10px' }}>TOTAL</td>
-            <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.dailyPlan)}</td>
-            <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.dailyActual)}</td>
+            <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.dailyPlan)}</td>
+            <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.dailyActual)}</td>
             <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(pct(totals.dailyActual, totals.dailyPlan))}</td>
-            <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.mtdPlan)}</td>
-            <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.mtdActual)}</td>
+            <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.mtdPlan)}</td>
+            <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.mtdActual)}</td>
             <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtPct(pct(totals.mtdActual, totals.mtdPlan))}</td>
-            <td className="font-mono" style={{ padding: '8px 10px' }}>{fmtNum(totals.dailyActual - totals.dailyPlan)}</td>
+            <td className="font-mono" style={{ padding: '8px 10px' }}>{mtKgNum(totals.dailyActual - totals.dailyPlan)}</td>
           </tr></tfoot>
         </table>
       </div>
@@ -13527,7 +13549,7 @@ function HorizonMyHome({
     { title: 'QC Hold Section', subtitle: 'Held LWC Baskets', icon: AlertOctagon, tab: 'qchold', cat: 'Favorites', color: '#bb0000' },
     { title: 'Lab & Mechanical', subtitle: 'Spectro & Tensile Tests', icon: Activity, tab: 'lab', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Purchase & Goods Receipt', subtitle: 'Orders & Receiving', icon: FileSpreadsheet, tab: 'conpurchase', cat: 'Favorites', color: '#5c2d91' },
-    { title: 'Stores & Master Store', subtitle: 'Items, Spares & Requisitions', icon: Boxes, tab: 'stores', cat: 'Favorites', color: '#5c2d91' },
+    { title: 'Stores & Spares', subtitle: 'Items, Spares & Requisitions', icon: Boxes, tab: 'stores', cat: 'Favorites', color: '#5c2d91' },
     { title: 'Cycle Count', subtitle: 'Physical Inventory Audit', icon: ScanLine, tab: 'cyclecount', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Display Outbound Delivery', subtitle: 'Dispatch & Challans', icon: Package, tab: 'dispatch', cat: 'Favorites', color: '#0a6ed1' },
     { title: 'Sales Orders', subtitle: 'Order Book & Tracking', icon: ClipboardList, tab: 'orders', cat: 'Favorites', color: '#0a6ed1' },
@@ -13795,16 +13817,18 @@ function HorizonMyHome({
 }
 
 function HomePage(props) {
-  // The Admin decides who sees the Insights Tiles and the coil quality panel (Master > Access > Visibility). The Admin always sees both.
+  // Each part of the Home dashboard is its own switch in Master > Access > Visibility. The Admin always sees everything.
   const role = props.user && props.user.role;
-  const showInsights = role === 'Admin' || canDo(role, 'home.insights');
-  const showCoil = role === 'Admin' || canDo(role, 'home.coilquality');
+  const can = (k) => role === 'Admin' || canDo(role, k);
+  const flags = { showTiles: can('home.insights'), showProd: can('home.production'), showRm: can('home.rm'), showOps: can('home.operations') };
+  const showDash = flags.showTiles || flags.showProd || flags.showRm || flags.showOps || DASHBOARD_WIDGETS.some(w => can('home.w.' + w));
+  const showCoil = can('home.coilquality');
   return (
     <div>
       <HorizonMyHome {...props} />
-      {showInsights && <SectionTitle sub={`${PLANT_NAME} · Plant ${PLANT_CODE} · live executive insights`}>Insights Tiles</SectionTitle>}
+      {showDash && <SectionTitle sub={`${PLANT_NAME} · Plant ${PLANT_CODE} · live executive insights`}>Insights Tiles</SectionTitle>}
       <AdminClearData user={props.user} onClear={props.onClearAll} />
-      {showInsights && <ExecutiveDashboard {...props} />}
+      {showDash && <ExecutiveDashboard {...props} {...flags} />}
       {showCoil && <CoilQualityPanel batches={props.batches} setTab={props.setTab} />}
     </div>
   );
@@ -14711,8 +14735,8 @@ function listMove(list, idx, dir) {
 
 // ---- numeric / time settings ----
 const SETTING_FIELDS = [
-  { key: 'monthlyTargetMT', group: 'Output', label: 'Monthly output target', unit: 'MT', def: 3000, min: 0, hint: 'Dashboard "month to date" and the daily run-rate (target / days in the month) use it.' },
-  { key: 'weeklyCapacityMT', group: 'Output', label: 'Weekly order capacity', unit: 'MT', def: 0, min: 0, hint: 'Sales is warned when the orders booked for a week pass it. 0 = no warning.' },
+  { key: 'monthlyTargetMT', group: 'Output', label: 'Monthly output target', unit: 'kg', scale: 1000, def: 3000, min: 0, hint: 'Dashboard "month to date" and the daily run-rate (target / days in the month) use it.' },
+  { key: 'weeklyCapacityMT', group: 'Output', label: 'Weekly order capacity', unit: 'kg', def: 0, min: 0, hint: 'Sales is warned when the orders booked for a week pass it. 0 = no warning.' },
   { key: 'costTargetPerKg', group: 'Cost', label: 'Cost target (conversion cost)', unit: '₹ / kg', def: 32, min: 0, minExclusive: true, hint: 'Labour + utilities + other costs per kg of good output. Shown against the real figure on the dashboard and Cost of Production.' },
   { key: 'copperCostPerMT', group: 'Cost', label: 'Copper cost', unit: '₹ / MT', def: 0, min: 0, hint: 'Used where a month has no copper rate of its own.' },
   { key: 'conversionCostPerHour', group: 'Cost', label: 'Conversion cost per machine hour', unit: '₹ / hour', def: 0, min: 0, hint: 'Used by Trends for the cost per hour.' },
@@ -17384,6 +17408,7 @@ function StPrModal({ pr, preItem, master, user, onSave, onClose }) {
         <StFld label="Requesting department *" style={{ flex: '1 1 180px' }}><select value={f.department} onChange={e => setF(Object.assign({}, f, { department: e.target.value }))} data-testid="pr-dept" style={stFull}><option value="">Select</option>{STORE_DEPARTMENTS.map(d => <option key={d.name}>{d.name}</option>)}</select></StFld>
         <StFld label="Priority" style={{ flex: '0 1 130px' }}><select value={f.priority} onChange={e => setF(Object.assign({}, f, { priority: e.target.value }))} style={stFull}>{['Normal', 'Urgent'].map(p => <option key={p}>{p}</option>)}</select></StFld>
       </div>
+      <div style={{ fontSize: 11.5, color: C.subtext, marginBottom: 6 }}>Item <span style={{ color: C.red }}>*</span> and Qty <span style={{ color: C.red }}>*</span> are required on every line.</div>
       {f.lines.map((l, i) => {
         const m = byId[l.itemId];
         return (
@@ -17503,7 +17528,7 @@ function StoresHub({ user, setTab, initialSub }) {
   const link = Object.assign({}, invBtn, { background: '#fff', color: 'var(--neel-accent, #0a6ed1)', border: '1px solid var(--neel-accent, #0a6ed1)' });
   if (!tabs.length) return <InvPageFrame title="Stores" sub="Master Store, stores and requisitions."><EmptyState title="No access" sub="Your role cannot open any part of the Stores. Ask the Admin (Master > Access)." /></InvPageFrame>;
   return (
-    <InvPageFrame title="Stores & Master Store" sub="One item list for consumables, tooling, dies and maintenance spares. Raise a requisition when stock runs low."
+    <InvPageFrame title="Stores & Spares" sub="One item list for consumables, tooling, dies and maintenance spares. Raise a requisition when stock runs low."
       right={<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {can('tab.constore') && <button type="button" style={link} onClick={() => setTab('constore')}>Issue & Reorder</button>}
         {can('tab.conpurchase') && <button type="button" style={link} onClick={() => setTab('conpurchase')}>Purchase Orders & GRN</button>}
@@ -18637,7 +18662,8 @@ const SPACE_HUBS = {
     { title: 'Inventory', tiles: [
       { tab: 'invraw', title: 'Raw Material Inventory', sub: 'Stock, Reorder & Adjustments' },
       { tab: 'invfin', title: 'Finished Goods Inventory', sub: 'Tubes in kg, Pallets & Boxes' },
-      { tab: 'stores', title: 'Stores & Master Store', sub: 'Consumables, Maintenance Spares & PR' },
+      { tab: 'stores', title: 'Stores & Spares', sub: 'Master Store, Consumables, Spares & PR' },
+      { tab: 'tooling', title: 'Tooling & Dies', sub: 'Die Usage & Polishing' },
       { tab: 'inventory', title: 'Stock Overview', sub: 'Raw & Finished Goods' },
     ] },
     { title: 'Consumables Cost Control', tiles: [
@@ -18669,11 +18695,9 @@ const SPACE_HUBS = {
       { tab: 'dpr', title: 'Daily Report', sub: 'Daily Production Report' },
     ] },
   ] },
-  hub_maint: { label: 'Maintenance & Tooling', sections: [
-    { title: 'Maintenance & Tooling', tiles: [
+  hub_maint: { label: 'Maintenance', sections: [
+    { title: 'Maintenance', tiles: [
       { tab: 'maintenance', title: 'Maintenance', sub: 'Breakdowns & Preventive Tasks' },
-      { tab: 'tooling', title: 'Tooling & Dies', sub: 'Die Usage & Polishing' },
-      { tab: 'stores', title: 'Stores & Spares', sub: 'Maintenance Stock & Raise PR' },
       { tab: 'energy', title: 'Machine Energy', sub: 'Energy Tracking' },
     ] },
   ] },
@@ -18739,7 +18763,7 @@ const NAV_GROUPS = [
       { key: 'energy', label: 'Machine Energy', icon: Zap, roles: ['Admin', 'Manager', 'Assistant Manager', 'Production', 'Maintenance - Electrical'] },
       { key: 'skills', label: 'Skill Matrix', icon: GraduationCap },
       { key: 'kaizen', label: 'Kaizen', icon: Lightbulb },
-      { key: 'stores', label: 'Stores & Master Store', icon: Boxes, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager', 'Production', 'Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room'] },
+      { key: 'stores', label: 'Stores & Spares', icon: Boxes, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager', 'Production', 'Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room'] },
       { key: 'inventory', label: 'Inventory', icon: Boxes },
       { key: 'cyclecount', label: 'Cycle Count', icon: ScanLine, roles: ['Admin', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Owner'] },
       { key: 'matdocs', label: 'Material Documents', icon: FileSpreadsheet },
@@ -18828,9 +18852,14 @@ const ACTION_FEATURES = [
   { key: 'rework.act', group: 'Quality', label: 'Send a lot for rework at Planetary Rolling', rule: r => isProductionManager(r) || r === 'Quality' || isManagerRole(r) },
   { key: 'maintenance.signoff', group: 'Maintenance', label: 'Sign off (resolve) breakdowns', rule: r => MAINTENANCE_SIGNOFF_ROLES.includes(r) },
   { key: 'cost.view', group: 'Cost', label: 'See cost figures (dashboard and Cost of Production)', rule: r => isManagerRole(r) || r === 'Owner' },
-  { key: 'home.insights', group: 'Visibility', label: 'Home: see the Insights Tiles (Control Tower, plant KPIs, widgets)', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
-  { key: 'home.coilquality', group: 'Visibility', label: 'Home: see the coil quality panel', rule: r => ['Quality', 'Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
-  ...DASHBOARD_WIDGETS.map(w => ({ key: 'home.w.' + w, group: 'Visibility', label: 'Home widget: ' + w, rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) || (w === 'Sales' && r === 'Sales') })),
+  { key: 'home.insights', group: 'Visibility', label: 'Home: Insights Tiles (today\'s output, plan, yield, orders)', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
+  { key: 'home.production', group: 'Visibility', label: 'Home: production flow, furnaces, 14-day chart and alerts', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
+  { key: 'home.rm', group: 'Visibility', label: 'Home: raw material overview', rule: r => [...['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'], 'RM & Supply Chain Manager', 'Store'].includes(r) },
+  { key: 'home.operations', group: 'Visibility', label: 'Home: Operations detail', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) },
+  { key: 'home.coilquality', group: 'Visibility', label: 'Home: coil quality panel', rule: r => ['Quality', ...['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner']].includes(r) },
+  ...DASHBOARD_WIDGETS.map(w => ({ key: 'home.w.' + w, group: 'Visibility',
+    label: w === 'Reject Pareto' ? 'Home: Rejections (Reject Pareto chart)' : w === 'Yield & Loss' ? 'Home: Yield & Loss chart' : 'Home widget: ' + w,
+    rule: r => w === 'Sales' ? ['Sales', 'Admin', 'Owner'].includes(r) : (w === 'Reject Pareto' || w === 'Yield & Loss') ? ['Quality', ...['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner']].includes(r) : ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) })),
   { key: 'customer.see', group: 'Visibility', label: 'See which customer an order is for', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner', 'Sales', 'Dispatch'].includes(r) },
   { key: 'master.add', group: 'Visibility', label: 'Add new customers, sizes and other values to Master from a form', rule: r => ['Sales', 'Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin'].includes(r) },
 ];
@@ -19323,9 +19352,9 @@ function Shell({
     { key: 'hub_qm', label: 'Neel : QM Apps', match: ['hub_qm', 'quality', 'qchold', 'qmlots', 'lab', 'spc', 'capa'] },
     { key: 'hub_sd', label: 'Neel : SD Apps', match: ['hub_sd', 'orders'] },
     { key: 'hub_ship', label: 'Shipping', match: ['hub_ship', 'dispatch'] },
-    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'invraw', 'invfin', 'stores', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock', 'purchaseorders', 'matprices', 'overduepo', 'conpurchase', 'constore', 'concost'] },
+    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'invraw', 'invfin', 'stores', 'tooling', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock', 'purchaseorders', 'matprices', 'overduepo', 'conpurchase', 'constore', 'concost'] },
     { key: 'hub_prod', label: 'Production & Shop Floor', match: ['hub_prod', 'plan', 'stages', 'floor', 'dpr', 'schedule'] },
-    { key: 'hub_maint', label: 'Maintenance & Tooling', match: ['hub_maint', 'maintenance', 'tooling', 'stores', 'energy'] },
+    { key: 'hub_maint', label: 'Maintenance', match: ['hub_maint', 'maintenance', 'energy'] },
     ...(canSeeTab(user, 'master') ? [{ key: 'hub_admin', label: 'Administration', match: ['hub_admin', 'master', 'team', 'cost', 'reports', 'audit', 'trends', 'skills', 'kaizen'] }] : []),
   ].filter(s => canSeeTab(user, s.key));
 
@@ -20831,7 +20860,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     if (!dprMachineExists(machineId) || DPR_DERIVED_PROCESSES.includes(dprProcessOf(machineId))) return { error: 'That machine is planned from the spinner plan lines.' };
     if (!SHIFTS.includes(shift)) return { error: 'Choose Day or Night.' };
     const t = String(value ?? '').trim().replace(',', '.');
-    if (t !== '' && (!isFinite(Number(t)) || Number(t) < 0)) return { error: 'Enter the planned MT as a number (0 or more).' };
+    if (t !== '' && (!isFinite(Number(t)) || Number(t) < 0)) return { error: 'Enter the planned quantity as a number (0 or more).' };
     const day = { ...(processPlansRef.current[date] || {}) };
     const row = { ...(day[machineId] || {}) };
     if (t === '') delete row[shift]; else row[shift] = Number(t);
@@ -20872,7 +20901,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     if (!dprMachineExists(machineId)) return { error: 'Choose the machine.' };
     if (field !== 'planOutput' && field !== 'actualOutput') return { error: 'Choose Plan or Actual.' };
     const t = String(value ?? '').trim().replace(',', '.');
-    if (t === '' || !isFinite(Number(t)) || Number(t) < 0) return { error: 'Enter the corrected MT (0 or more).' };
+    if (t === '' || !isFinite(Number(t)) || Number(t) < 0) return { error: 'Enter the corrected quantity as a number (0 or more).' };
     if (!String(reason || '').trim()) return { error: 'Write the reason for the correction.' };
     const now = new Date().toISOString();
     const row = { ...((snap.rows || {})[machineId] || {}) }; const from = row[field];
@@ -21843,7 +21872,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     commitHeats([heat, ...heatsRef.current]);
     // goods issue (261) to the first production order of the heat, one document per raw material
     v.lines.filter(l => l.deducted).forEach(l => adjustRaw(l.itemId, -l.qty, { movementType: '261', refDoc: pos[0] }));
-    notifyRoles(['Production', 'Manager', 'Assistant Manager'], `Heat cast at ${v.furnace.name}: shells ${v.codes[0]} (${fmtQty(b1.qty, 'kg')}) and ${v.codes[1]} (${fmtQty(b2.qty, 'kg')}); raw material ${v.rawTotalMT} MT.`, 'heat_cast', { heatId, codes: v.codes });
+    notifyRoles(['Production', 'Manager', 'Assistant Manager'], `Heat cast at ${v.furnace.name}: shells ${v.codes[0]} (${fmtQty(b1.qty, 'kg')}) and ${v.codes[1]} (${fmtQty(b2.qty, 'kg')}); raw material ${mtKgText(v.rawTotalMT)}.`, 'heat_cast', { heatId, codes: v.codes });
     logAudit({ actor: user.name, action: 'heat', entityType: 'melting_heat', entityId: heatId, details: { furnace: v.furnace.name, codes: v.codes, rawMT: v.rawTotalMT } });
     return { ok: true, heatId, codes: v.codes, productionOrders: pos };
   };
