@@ -8196,8 +8196,10 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
   const isAdmin = user?.role === 'Admin';   // only the Admin may switch standard; everyone else gets the one matching the size
   const stds = standardsFor(MDs.standards, stageLabel);
   const stdRequired = !!(MDs.standardRequired || {})[stageLabel];
-  const [standardId, setStandardId] = useState(() => (stds.length === 1 ? stds[0].id : (standardForSpec(stds, batch.spec)?.id || '')));
-  const std = stds.find(x => x.id === standardId) || null;
+  const [standardId, setStandardId] = useState('');
+  // the Admin's choice, else the only standard, else the one whose size text matches the order. Worked out on every render, so a standard
+  // that was added or loaded after the form opened is picked up straight away (it used to be fixed once, when the form first opened).
+  const std = stds.find(x => x.id === standardId) || (stds.length === 1 ? stds[0] : standardForSpec(stds, batch.spec)) || null;
   const locked = stds.length > 0;
   const noStd = stds.length === 0 && stdRequired;
   const [targetOD, setTargetOD] = useState(batch.targetOD ?? '');
@@ -8268,12 +8270,12 @@ function PassMeasurementForm({ batch, stageLabel, machineOptions, machineLabel, 
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13, color: C.copperDark, fontWeight: 600, maxWidth: 420 }}>
           Standard <span style={{ fontWeight: 400, color: C.subtext, fontSize: 11.5 }}>({'the standard, target and tolerance are set only in Master — you enter what you measured'})</span>
           {isAdmin && !fixedStandard ? (
-            <select aria-label="Standard" value={standardId} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
+            <select aria-label="Standard" value={std ? std.id : standardId} onChange={e => setStandardId(e.target.value)} style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 14 }}>
               <option value="">— choose the standard —</option>{stds.map(x => <option key={x.id} value={x.id}>{x.name}{x.spec ? ` · ${x.spec}` : ''}</option>)}
             </select>
           ) : (
             <div data-testid="standard-readonly" style={{ padding: '9px 12px', borderRadius: 8, border: `1px solid ${C.borderSoft}`, fontSize: 14, background: C.panelAlt, color: C.ink, fontWeight: 700 }}>
-              {std ? `${std.name}${std.spec ? ` · ${std.spec}` : ''}` : 'No standard is fixed for this size — ask the Admin to set one in Master'}
+              {std ? `${std.name}${std.spec ? ` · ${std.spec}` : ''}` : (stds.length > 1 ? `${stds.length} standards exist for ${stageLabel}, but none has the size text ${batch.spec || '(no size on this order)'} — ask the Admin to set the size text of one of them in Master` : 'No standard is fixed for this size — ask the Admin to set one in Master')}
             </div>
           )}
         </label>
@@ -8504,7 +8506,7 @@ function RouteGate({ batch, planLines, planDate, planMeta, orders, canManagePlan
                       return (
                         <tr key={i} style={{ borderBottom: `1px solid ${C.borderSoft}`, background: isFinal ? C.copperFaint : 'transparent' }}>
                           <td style={{ padding: 8, fontWeight: 600, color: C.ink }}>{p.passNo || i + 1} {isFinal && <span style={{ fontSize: 10, color: C.copperDark }}>(Final)</span>}</td>
-                          <td className="font-mono" style={{ padding: 8, fontWeight: 600 }}>{p.od} x {p.thk} mm</td>
+                          <td className="font-mono" style={{ padding: 8, fontWeight: 600 }}>{p.od} x {p.thk} mm{(Number(p.dieDia) > 0 || Number(p.plugBody) > 0) && <div style={{ fontSize: 10.5, color: C.faint, fontWeight: 500 }}>Die {p.dieDia || '—'} · Plug {p.plugBody || '—'}{p.plugNib ? ' / nib ' + p.plugNib : ''}</div>}</td>
                           <td className="font-mono" style={{ padding: 8, color: C.blue, fontWeight: 600 }}>{p.rpm !== '' && p.rpm != null ? `${p.rpm} RPM` : '—'}</td>
                           <td style={{ padding: 8 }}>
                             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -9759,6 +9761,220 @@ function MasterSizes({ sizes, specsList, onSave, onSaveList }) {
 }
 
 // Optional multi-pass drawing schedule inside a Master standard (Spinner). Each pass: target OD, thickness, speed.
+/* =========================================================================
+   DRAW PASS SCHEDULE  (Cascade and Spinner standards, in the same layout as the plant's Excel sheet)
+   Each pass: outside diameter, wall thickness, die diameter, plug body size, plug nib size. The last row is the final size.
+   Registered dies and plugs (Tooling > serialized tools) whose size matches a pass are worn automatically when a basket is logged.
+   ========================================================================= */
+const DRAW_BG = { size: '#fff3b0', die: '#cfeab8', plug: '#b8ecf2' };
+const WEAR_DIE_CATS = ['Carbide Die', 'Graphite Die', 'Drawing Ring'];
+const WEAR_PLUG_CATS = ['Mandrel Plug'];
+function drawBlankPass() { return { od: '', thk: '', rpm: '', dieDia: '', plugBody: '', plugNib: '' }; }
+const drawFmt = (v) => (v === '' || v == null ? '' : String(Math.round(Number(v) * 1000) / 1000));
+
+// turns the rows of a sheet (like the plant's draw schedule) into { billet, start, cascade[], draw[] }
+function parseDrawSchedule(rows) {
+  const norm = (v) => String(v ?? '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const num = (v) => { if (v === '' || v == null) return ''; const n = Number(String(v).replace(/,/g, '').trim()); return isFinite(n) && n > 0 ? n : ''; };
+  const isLabel = (t) => /^(billet|start)( size)?$/.test(t) || /^(cascade|casc|draw|pass)\s*\d+$/.test(t);
+  let first = -1;
+  for (let r = 0; r < rows.length; r++) { if (isLabel(norm((rows[r] || [])[0]))) { first = r; break; } }
+  if (first < 0) return { error: 'No draw schedule found. The first column must list Billet Size, Start Size, Cascade 1, Cascade 2 ... and Draw 1, Draw 2 ...' };
+  const ncol = Math.max(6, ...rows.map(r => (r || []).length));
+  const heads = Array.from({ length: ncol }, () => '');
+  for (let r = Math.max(0, first - 4); r < first; r++) {
+    let carry = '';
+    for (let c = 0; c < ncol; c++) {
+      const t = norm((rows[r] || [])[c]);
+      if (t) { carry = (t === 'die' || t === 'plug') ? t : ''; heads[c] = (heads[c] + ' ' + t).trim(); }
+      else if (carry) heads[c] = (heads[c] + ' ' + carry).trim();
+    }
+  }
+  const find = (re, not) => { const c = heads.findIndex(h => re.test(h) && !(not && not.test(h))); return c; };
+  let cOd = find(/outside|outer/), cThk = find(/wall|thick/), cDie = find(/die/, /plug/), cBody = find(/plug.*body|body/), cNib = find(/nib/);
+  if (cOd < 0) cOd = 1; if (cThk < 0) cThk = 2; if (cDie < 0) cDie = 3; if (cBody < 0) cBody = 4; if (cNib < 0) cNib = 5;
+  const out = { billet: null, start: null, cascade: [], draw: [], skipped: 0 };
+  for (let r = first; r < rows.length; r++) {
+    const row = rows[r] || []; const label = norm(row[0]);
+    if (!isLabel(label)) continue;
+    const rec = { od: num(row[cOd]), thk: num(row[cThk]), dieDia: num(row[cDie]), plugBody: num(row[cBody]), plugNib: num(row[cNib]) };
+    if (!(rec.od > 0) || !(rec.thk > 0)) { out.skipped++; continue; }
+    if (label.indexOf('billet') === 0) out.billet = rec;
+    else if (label.indexOf('start') === 0) out.start = rec;
+    else if (/^(cascade|casc)/.test(label)) out.cascade.push({ n: parseInt(label.replace(/\D+/g, ''), 10) || out.cascade.length + 1, ...rec });
+    else out.draw.push({ n: parseInt(label.replace(/\D+/g, ''), 10) || out.draw.length + 1, ...rec });
+  }
+  out.cascade.sort((a, b) => a.n - b.n); out.draw.sort((a, b) => a.n - b.n);
+  if (!out.cascade.length && !out.draw.length) return { error: 'The sheet has no Cascade or Draw rows with an outside diameter and a wall thickness.' };
+  return out;
+}
+async function readDrawScheduleFile(file) {
+  if (file.size > 5 * 1024 * 1024) return { error: 'That file is over 5 MB. Keep only the draw schedule sheet.' };
+  let wb;
+  try { wb = XLSX.read(await file.arrayBuffer(), { type: 'array' }); } catch (e) { return { error: 'That file could not be read as an Excel sheet.' }; }
+  let lastErr = 'The file has no sheets.';
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name]; if (!ws || !ws['!ref']) continue;
+    const end = XLSX.utils.decode_range(ws['!ref']).e;
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true, range: { s: { r: 0, c: 0 }, e: end } });
+    const r = parseDrawSchedule(rows);
+    if (!r.error) return { ...r, sheet: name };
+    lastErr = r.error;
+  }
+  return { error: lastErr };
+}
+function downloadDrawTemplate() {
+  const wb = XLSX.utils.book_new();
+  const aoa = [
+    ['Draw Number', 'Outside Diameter mm', 'Wall Thickness mm', 'Die Diameter mm', 'Plug Body Size mm', 'Plug Nib Size mm'],
+    ['Billet Size', 90, 23, '', '', ''], ['Start Size', 50, 2.75, '', '', ''],
+    ['Cascade 1', 41.9, 1.85, 41.9, 42.215, 38.2], ['Cascade 2', 33.5, 1.49, 33.5, 34.6, 30.52], ['Cascade 3', 27.8, 1.15, 27.8, 28.8, 25.5],
+    ['Draw 1', 21.731, 1.03, 21.731, 22.817, 19.67], ['Draw 2', 16.9, 0.92, 16.9, 17.745, 15.06], ['Draw 3', 12.92, 0.82, 12.92, 13.566, 11.28],
+    ['Draw 4', 10, 0.72, 10, 10.5, 8.56], ['Draw 5', 7.976, 0.61, 7.976, 8.374, 6.75],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Draw schedule');
+  const notes = ['Keep the first column labels as they are: Billet Size, Start Size, Cascade 1.., Draw 1..', 'The last Draw row is the final size to make. Replace the example numbers with your own.', 'Die diameter, plug body size and nib size are optional, but needed to track the life of dies and plugs automatically.'];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(notes.map(n => [n])), 'Notes');
+  XLSX.writeFile(wb, 'draw-schedule-template.xlsx');
+}
+// which registered dies and plugs a batch of `kg` wears while it goes through `passes`
+function toolWearPlan({ passes, kg, machine, instances, master }) {
+  const byId = Object.fromEntries((master || []).map(m => [m.id, m]));
+  const live = (instances || []).filter(i => i.status !== 'Scrapped' && i.status !== 'In Maintenance / Polishing');
+  const mach = String(machine || '').toLowerCase();
+  const pick = (cats, size) => {
+    const c = live.filter(i => cats.includes((byId[i.consumable_master_id] || {}).category) && Math.abs(Number(i.current_size_mm) - Number(size)) <= 0.02);
+    if (!c.length) return null;
+    c.sort((a, b) => ((String(b.machine_id || '').toLowerCase() === mach) - (String(a.machine_id || '').toLowerCase() === mach)) || (Number(b.total_meters_run) || 0) - (Number(a.total_meters_run) || 0));
+    return c[0];
+  };
+  const entries = [], missing = [];
+  (passes || []).forEach((p, idx) => {
+    const m = metersFromKg(kg, calcGramPerMeter(p.od, p.thk));
+    if (!(m > 0)) return;
+    [['die', WEAR_DIE_CATS, p.dieDia], ['plug', WEAR_PLUG_CATS, p.plugBody]].forEach(([kind, cats, size]) => {
+      if (!(Number(size) > 0)) return;
+      const t = pick(cats, size); const no = p.passNo || idx + 1;
+      if (!t) { missing.push(`${p.kind === 'Cascade' ? 'Cascade' : 'Draw'} ${no} ${kind} ${drawFmt(size)} mm`); return; }
+      const prev = entries.find(e => e.toolId === t.id);
+      if (prev) { prev.meters += m; prev.passes.push(no); } else entries.push({ toolId: t.id, kind, meters: m, kg: Number(kg), passes: [no] });
+    });
+  });
+  entries.forEach(e => { e.meters = Math.round(e.meters); });
+  return { entries, missing };
+}
+
+function DrawScheduleBuilder({ kind, f, onChange }) {
+  const isCascade = kind === 'Cascade';
+  const label = isCascade ? 'Cascade' : 'Draw';
+  const list = f.passes || [];
+  const billet = f.billet || { od: '', thk: '' }; const start = f.start || { od: '', thk: '' };
+  const fileRef = useRef(null);
+  const [note, setNote] = useState(null);
+  const renum = (arr) => arr.map((p, n) => ({ ...p, passNo: n + 1, kind: isCascade ? 'Cascade' : 'Draw' }));
+  const commit = (arr) => {
+    const last = arr[arr.length - 1];
+    onChange({ passes: arr, ...(last && Number(last.od) > 0 && Number(last.thk) > 0 ? { od: String(last.od), thk: String(last.thk) } : {}) });
+  };
+  const setCell = (i, k, v) => commit(list.map((p, n) => (n === i ? { ...p, [k]: v } : p)));
+  const addPass = () => commit(renum([...list, drawBlankPass()]));
+  const removePass = (i) => commit(renum(list.filter((_, n) => n !== i)));
+  const onFile = async (e) => {
+    const file = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!file) return;
+    const r = await readDrawScheduleFile(file);
+    if (r.error) { setNote({ ok: false, text: r.error }); return; }
+    const rows = isCascade ? r.cascade : r.draw;
+    if (!rows.length) { setNote({ ok: false, text: `That sheet has no ${label} rows.` }); return; }
+    const arr = renum(rows.map(x => ({ ...drawBlankPass(), od: drawFmt(x.od), thk: drawFmt(x.thk), dieDia: drawFmt(x.dieDia), plugBody: drawFmt(x.plugBody), plugNib: drawFmt(x.plugNib) })));
+    const patch = {};
+    if (isCascade) {
+      if (r.billet) patch.billet = { od: drawFmt(r.billet.od), thk: drawFmt(r.billet.thk) };
+      if (r.start) patch.start = { od: drawFmt(r.start.od), thk: drawFmt(r.start.thk) };
+    } else {
+      const prevSize = r.cascade[r.cascade.length - 1] || r.start;
+      if (prevSize) patch.inputSize = `${drawFmt(prevSize.od)} x ${drawFmt(prevSize.thk)} MM`;
+    }
+    const last = arr[arr.length - 1];
+    onChange({ passes: arr, ...patch, od: String(last.od), thk: String(last.thk) });
+    setNote({ ok: true, text: `Imported ${arr.length} ${label} pass${arr.length === 1 ? '' : 'es'} from “${file.name}” (sheet ${r.sheet}).${r.skipped ? ` ${r.skipped} row(s) without a diameter and thickness were skipped.` : ''} Check the sizes, then press the save button below.` });
+  };
+  const cell = (v, onCh, bg, aria) => <input aria-label={aria} type="number" step="0.001" value={v ?? ''} onChange={e => onCh(e.target.value)} style={{ ...miniInput, width: 88, background: bg }} />;
+  const th = (bg, extra) => ({ padding: '6px 8px', fontSize: 11.5, fontWeight: 700, color: C.ink, background: bg, border: `1px solid ${C.border}`, textAlign: 'center', ...extra });
+  const td = { padding: '4px 6px', border: `1px solid ${C.borderSoft}`, textAlign: 'center' };
+  const last = list[list.length - 1];
+  const sizeRow = (name, val, key) => (
+    <tr key={key}>
+      <td style={{ ...td, fontWeight: 700, textAlign: 'left' }}>{name}</td>
+      <td style={td}>{cell(val.od, v => onChange({ [key]: { ...val, od: v } }), DRAW_BG.size, `${name} outside diameter`)}</td>
+      <td style={td}>{cell(val.thk, v => onChange({ [key]: { ...val, thk: v } }), DRAW_BG.size, `${name} wall thickness`)}</td>
+      <td colSpan={isCascade ? 4 : 5} style={{ ...td, color: C.faint, fontSize: 11.5 }}>{key === 'billet' ? 'size going into the rolling mill' : 'size going into the first cascade pass'}</td>
+    </tr>
+  );
+  return (
+    <div data-testid="draw-schedule-builder" style={{ padding: 14, background: C.panelAlt, border: `1px solid ${C.border}`, borderRadius: 8, marginTop: 14, marginBottom: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink }}>{label.toUpperCase()} PASS SCHEDULE{isCascade ? ' (with die and plug)' : ' (with die and plug)'}</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" aria-label={`Import ${label} schedule from Excel`} onChange={onFile} style={{ display: 'none' }} />
+          <Button variant="secondary" onClick={() => fileRef.current && fileRef.current.click()}>Import from Excel</Button>
+          <Button variant="ghost" onClick={downloadDrawTemplate}>Download template</Button>
+        </div>
+      </div>
+      <p style={{ fontSize: 12, color: C.subtext, margin: '0 0 10px' }}>
+        {isCascade ? 'Billet size, start size, then every cascade pass with its die and plug.' : 'Every draw pass with its die and plug.'} The last row is the <strong>final size to make</strong>: it fills the OD and thickness target below. Die and plug sizes are matched with the registered tools to track their life automatically.
+      </p>
+      {note && <p role="status" style={{ fontSize: 12.5, margin: '0 0 10px', color: note.ok ? C.green : C.red, fontWeight: 600 }}>{note.text}</p>}
+      {!isCascade && <div style={{ marginBottom: 12, maxWidth: 300 }}><TextField label="Start size (input from previous stage)" placeholder="e.g. 27.8 x 1.15 MM" value={f.inputSize || ''} onChange={e => onChange({ inputSize: e.target.value })} /></div>}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', fontSize: 12.5, minWidth: 640 }}>
+          <thead>
+            <tr>
+              <th rowSpan={2} style={th('#fff', { textAlign: 'left' })}>{label} number</th>
+              <th rowSpan={2} style={th(DRAW_BG.size)}>Outside diameter (mm)</th>
+              <th rowSpan={2} style={th(DRAW_BG.size)}>Wall thickness (mm)</th>
+              <th style={th(DRAW_BG.die)}>Die</th>
+              <th colSpan={2} style={th(DRAW_BG.plug)}>Plug</th>
+              {!isCascade && <th rowSpan={2} style={th('#fff')}>Speed (RPM)</th>}
+              <th rowSpan={2} style={th('#fff')} />
+            </tr>
+            <tr>
+              <th style={th(DRAW_BG.die)}>Diameter (mm)</th>
+              <th style={th(DRAW_BG.plug)}>Body size (mm)</th>
+              <th style={th(DRAW_BG.plug)}>Nib size (mm)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {isCascade && sizeRow('Billet size', billet, 'billet')}
+            {isCascade && sizeRow('Start size', start, 'start')}
+            {list.map((p, i) => {
+              const fin = i === list.length - 1;
+              return (
+                <tr key={i} style={fin ? { outline: `2px solid ${C.copper}` } : undefined}>
+                  <td style={{ ...td, fontWeight: 700, textAlign: 'left', whiteSpace: 'nowrap' }}>{label} {p.passNo || i + 1}{fin && <span style={{ marginLeft: 6, fontSize: 10, color: C.copperDark }}>FINAL</span>}</td>
+                  <td style={td}>{cell(p.od, v => setCell(i, 'od', v), DRAW_BG.size, `${label} ${i + 1} outside diameter`)}</td>
+                  <td style={td}>{cell(p.thk, v => setCell(i, 'thk', v), DRAW_BG.size, `${label} ${i + 1} wall thickness`)}</td>
+                  <td style={td}>{cell(p.dieDia, v => setCell(i, 'dieDia', v), DRAW_BG.die, `${label} ${i + 1} die diameter`)}</td>
+                  <td style={td}>{cell(p.plugBody, v => setCell(i, 'plugBody', v), DRAW_BG.plug, `${label} ${i + 1} plug body size`)}</td>
+                  <td style={td}>{cell(p.plugNib, v => setCell(i, 'plugNib', v), DRAW_BG.plug, `${label} ${i + 1} plug nib size`)}</td>
+                  {!isCascade && <td style={td}><input aria-label={`${label} ${i + 1} speed RPM`} type="number" value={p.rpm ?? ''} onChange={e => setCell(i, 'rpm', e.target.value)} style={{ ...miniInput, width: 72 }} /></td>}
+                  <td style={td}><Button variant="ghost" icon={Trash2} onClick={() => removePass(i)} style={{ color: C.red }} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <Button variant="secondary" icon={Plus} onClick={addPass} style={{ marginTop: 10 }}>Add {label} pass</Button>
+      {last && Number(last.od) > 0 && Number(last.thk) > 0 && (
+        <div data-testid="draw-final-size" style={{ marginTop: 12, padding: '8px 12px', background: C.copperFaint, borderRadius: 6, fontSize: 13, color: C.copperDark }}>
+          Final size to make: <strong>{last.od} x {last.thk} mm</strong> ({label} {last.passNo || list.length}). Set the OD and thickness tolerances in the boxes below.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PassScheduleBuilder({ inputSize, setInputSize, passes, onChange }) {
   const list = passes || [];
   const addPass = () => onChange([...list, { passNo: list.length + 1, od: '', thk: '', rpm: '' }]);
@@ -9786,7 +10002,7 @@ function PassScheduleBuilder({ inputSize, setInputSize, passes, onChange }) {
 }
 
 function MasterStandardsCard({ stage, standards, required, tolLocked, onSave, onRequired, onTolLock }) {
-  const blank = { name: '', spec: '', od: '', odTol: '', thk: '', thkTol: '', inputSize: '', passes: [] };
+  const blank = { name: '', spec: '', od: '', odTol: '', thk: '', thkTol: '', inputSize: '', passes: [], billet: { od: '', thk: '' }, start: { od: '', thk: '' } };
   const [f, setF] = useState(blank), [editing, setEditing] = useState(null), [err, setErr] = useState(''), [msg, setMsg] = useState('');
   const mine = (standards || []).filter(x => x.stage === stage);
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
@@ -9822,7 +10038,7 @@ function MasterStandardsCard({ stage, standards, required, tolLocked, onSave, on
                   <td className="font-mono" style={{ padding: '7px 10px' }}>{x.od} ± {x.odTol}</td>
                   <td className="font-mono" style={{ padding: '7px 10px' }}>{x.thk} ± {x.thkTol}</td>
                   <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
-                    <button type="button" aria-label={`Edit ${x.name} at ${stage}`} onClick={() => { setEditing(x.id); setF({ name: x.name, spec: x.spec || '', od: String(x.od), odTol: String(x.odTol), thk: String(x.thk), thkTol: String(x.thkTol), inputSize: x.inputSize || '', passes: (x.passes || []).map(p => ({ ...p, od: String(p.od), thk: String(p.thk), rpm: p.rpm === '' || p.rpm == null ? '' : String(p.rpm) })) }); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Edit</button>{' '}
+                    <button type="button" aria-label={`Edit ${x.name} at ${stage}`} onClick={() => { setEditing(x.id); setF({ name: x.name, spec: x.spec || '', od: String(x.od), odTol: String(x.odTol), thk: String(x.thk), thkTol: String(x.thkTol), inputSize: x.inputSize || '', billet: x.billet ? { od: String(x.billet.od), thk: String(x.billet.thk) } : { od: '', thk: '' }, start: x.start ? { od: String(x.start.od), thk: String(x.start.thk) } : { od: '', thk: '' }, passes: (x.passes || []).map(p => ({ ...p, od: String(p.od), thk: String(p.thk), rpm: p.rpm === '' || p.rpm == null ? '' : String(p.rpm), dieDia: p.dieDia === '' || p.dieDia == null ? '' : String(p.dieDia), plugBody: p.plugBody === '' || p.plugBody == null ? '' : String(p.plugBody), plugNib: p.plugNib === '' || p.plugNib == null ? '' : String(p.plugNib) })) }); setErr(''); setMsg(''); }} style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Edit</button>{' '}
                     <button type="button" aria-label={`${x.active === false ? 'Reactivate' : 'Deactivate'} ${x.name} at ${stage}`} onClick={() => commit(standardSetActive(standards, x.id, x.active === false), { field: `${stage} · ${x.name}`, from: x.active === false ? 'inactive' : 'active', to: x.active === false ? 'active' : 'inactive' })} style={{ background: 'none', border: 'none', color: C.steel, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>{x.active === false ? 'Reactivate' : 'Deactivate'}</button>{' '}
                     <ConfirmIconButton title={`Remove ${x.name} at ${stage}`} onConfirm={() => commit(standardRemove(standards, x.id), { field: `${stage} · ${x.name}`, from: 'in Master', to: 'removed' })} />
                   </td>
@@ -9832,7 +10048,7 @@ function MasterStandardsCard({ stage, standards, required, tolLocked, onSave, on
           </table>
         </div>
       )}
-      {stage === 'Spinner' && <PassScheduleBuilder inputSize={f.inputSize} setInputSize={v => set('inputSize', v)} passes={f.passes} onChange={v => set('passes', v)} />}
+      {(stage === 'Spinner' || stage === 'Cascade') && <DrawScheduleBuilder kind={stage} f={f} onChange={patch => setF(p => ({ ...p, ...patch }))} />}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         {[['name', 'Name', 150, 'text'], ['spec', 'Size text (optional)', 140, 'text'], ['od', 'OD target mm', 90], ['odTol', 'OD ± mm', 80], ['thk', 'Thickness target mm', 110], ['thkTol', 'Thickness ± mm', 100]].map(([k, l, w, t]) => (
           <label key={k} style={{ fontSize: 12, color: C.subtext, display: 'flex', flexDirection: 'column', gap: 4 }}>{l}
@@ -19041,7 +19257,7 @@ function standardCheck(list, input, exceptId = null) {
   if (spec0.length > 60) return { error: 'Use at most 60 characters for the size text.' };
   const clean = { stage, name, spec: spec0 ? normalizeSpec(spec0) : '', od, odTol, thk, thkTol };
   // optional multi-pass drawing schedule (used at the Spinner): every pass needs an OD and a thickness, RPM is optional
-  const rawPasses = Array.isArray(input.passes) ? input.passes.filter(p => !(String(p.od ?? '').trim() === '' && String(p.thk ?? '').trim() === '' && String(p.rpm ?? '').trim() === '')) : [];
+  const rawPasses = Array.isArray(input.passes) ? input.passes.filter(p => !(String(p.od ?? '').trim() === '' && String(p.thk ?? '').trim() === '' && String(p.rpm ?? '').trim() === '' && String(p.dieDia ?? '').trim() === '' && String(p.plugBody ?? '').trim() === '' && String(p.plugNib ?? '').trim() === '')) : [];
   if (rawPasses.length) {
     const passes = [];
     for (let i = 0; i < rawPasses.length; i++) {
@@ -19049,9 +19265,24 @@ function standardCheck(list, input, exceptId = null) {
       if (!(pOd > 0) || !(pThk > 0)) return { error: `Pass ${i + 1}: enter the target OD and thickness in mm (more than 0).` };
       if (pThk >= pOd) return { error: `Pass ${i + 1}: the thickness must be smaller than the OD.` };
       if (pRpm !== '' && !(pRpm > 0)) return { error: `Pass ${i + 1}: the speed (RPM) must be more than 0, or left blank.` };
-      passes.push({ passNo: i + 1, od: pOd, thk: pThk, rpm: pRpm });
+      const tool = {};
+      for (const [k, lbl] of [['dieDia', 'die diameter'], ['plugBody', 'plug body size'], ['plugNib', 'plug nib size']]) {
+        const t = String(rawPasses[i][k] ?? '').trim();
+        if (t === '') { tool[k] = ''; continue; }
+        const v = standardNum(t);
+        if (!(v > 0)) return { error: `Pass ${i + 1}: the ${lbl} must be more than 0 mm, or left blank.` };
+        tool[k] = v;
+      }
+      passes.push({ passNo: i + 1, kind: stage === 'Cascade' ? 'Cascade' : 'Draw', od: pOd, thk: pThk, rpm: pRpm, ...tool });
     }
     clean.passes = passes;
+    for (const [k, lbl] of [['billet', 'Billet size'], ['start', 'Start size']]) {
+      const b = input[k];
+      if (!b || (String(b.od ?? '').trim() === '' && String(b.thk ?? '').trim() === '')) continue;
+      const bo = standardNum(b.od), bt = standardNum(b.thk);
+      if (!(bo > 0) || !(bt > 0) || bt >= bo) return { error: `${lbl}: enter the outside diameter and the wall thickness in mm (thickness smaller than the diameter).` };
+      clean[k] = { od: bo, thk: bt };
+    }
     const inTxt = mdName(input.inputSize);
     if (inTxt.length > 60) return { error: 'Use at most 60 characters for the input size.' };
     if (inTxt) clean.inputSize = inTxt;
@@ -19067,7 +19298,7 @@ function standardUpdate(list, id, input) {
   const cur = (list || []).find(x => x.id === id); if (!cur) return { error: 'That standard is not in Master.' };
   const r = standardCheck(list, { ...input, stage: cur.stage }, id); if (r.error) return r;
   // a schedule removed in the editor must really go: drop the old one before merging
-  return { standards: list.map(x => { if (x.id !== id) return x; const { passes, inputSize, ...rest } = x; return { ...rest, ...r.clean }; }) };
+  return { standards: list.map(x => { if (x.id !== id) return x; const { passes, inputSize, billet, start, ...rest } = x; return { ...rest, ...r.clean }; }) };
 }
 function standardSetActive(list, id, active) { return { standards: (list || []).map(x => x.id === id ? { ...x, active: !!active } : x) }; }
 function standardRemove(list, id) { return { standards: (list || []).filter(x => x.id !== id) }; }
@@ -20321,6 +20552,31 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
     saveShared(KEYS.tooling, next);
     return next;
   });
+  // Die and plug wear from a drawing schedule: books metres and kg on the registered tools whose size matches each pass.
+  const recordScheduleWear = async ({ std, kg, machine, batchId, stage, user: who, manualDieId, manualMeters }) => {
+    try {
+      if (!std || !Array.isArray(std.passes) || !(Number(kg) > 0)) return;
+      if (!std.passes.some(p => Number(p.dieDia) > 0 || Number(p.plugBody) > 0)) return;
+      const readStore = async (key) => { let v = await loadShared(key, null); if (v == null) { try { const l = localStorage.getItem(key); v = l ? JSON.parse(l) : null; } catch { v = null; } } return v; };
+      const instances = await readStore(KEYS.toolingInstances); const master = await readStore(KEYS.consumablesMaster);
+      if (!Array.isArray(instances) || !Array.isArray(master)) return;
+      const plan = toolWearPlan({ passes: std.passes, kg, machine, instances, master });
+      const add = {}; plan.entries.forEach(e => { add[e.toolId] = e; });
+      if (manualDieId && !add[manualDieId] && Number(manualMeters) > 0 && instances.some(i => i.id === manualDieId)) add[manualDieId] = { toolId: manualDieId, kind: 'die', meters: Math.round(Number(manualMeters)), kg: Number(kg), passes: [] };
+      const list = Object.values(add);
+      const batchNo = (batchesRef.current.find(b => b.id === batchId) || {}).productionOrderNo || batchId;
+      if (list.length) {
+        const next = instances.map(i => add[i.id] ? { ...i, total_meters_run: (Number(i.total_meters_run) || 0) + add[i.id].meters, total_kg_run: (Number(i.total_kg_run) || 0) + add[i.id].kg, status: i.status === 'New' ? 'In Service' : i.status, history: [...(i.history || []), { at: todayKey(), action: `${stage} ${batchNo}: +${add[i.id].meters} m, +${add[i.id].kg} kg`, size_mm: i.current_size_mm }] } : i);
+        saveShared(KEYS.toolingInstances, next);
+        try { localStorage.setItem(KEYS.toolingInstances, JSON.stringify(next)); } catch { /* ignore */ }
+        // the older die list (read by the Spinner gate picker) follows; a die picked by hand there is already booked
+        list.forEach(e => { if (e.toolId !== manualDieId && toolingRef.current.some(d => d.id === e.toolId)) updateDieUsage(e.toolId, e.meters); });
+        logAudit({ actor: who.name, action: 'update', entityType: 'tooling', entityId: batchId, details: { stage, wear: list.map(e => ({ tool: e.toolId, meters: e.meters })) } });
+      }
+      commitBatches(batchesRef.current.map(b => b.id === batchId ? { ...b, toolWear: [...(b.toolWear || []), { stage, at: new Date().toISOString(), by: who.name, booked: list.map(e => ({ toolId: e.toolId, meters: e.meters, kg: e.kg })), notTracked: plan.missing }] } : b));
+      if (plan.missing.length) notifyRoles(['Manager', 'Assistant Manager', 'Tool Room', 'Maintenance - Mechanical'], `${batchNo} at ${stage}: no registered die or plug for ${plan.missing.slice(0, 4).join(', ')}${plan.missing.length > 4 ? ' ...' : ''}. Register them in Tooling so their life is tracked.`, 'tool_wear_missing');
+    } catch (e) { /* wear tracking must never stop the shop floor */ }
+  };
   const sendDieForPolishing = (id) => setToolingItems(prev => {
     const next = prev.map(d => d.id === id ? { ...d, usageMeters: 0, status: 'Active' } : d);
     saveShared(KEYS.tooling, next);
@@ -20563,6 +20819,8 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       updateDieUsage(dieId, Math.round(Number(dieMeters)));
       logAudit({ actor: user.name, action: 'update', entityType: 'die', entityId: dieId, details: { addedMeters: Math.round(Number(dieMeters)), batchId: id } });
     }
+    // dies and plugs of the draw schedule wear by the metres of each pass
+    recordScheduleWear({ std: rs.standard, kg: Number(target.qty), machine: dprMachineIdFor('spinner', line.spinnerMachine) || line.spinnerMachine, batchId: id, stage: 'Spinner', user, manualDieId: dieId, manualMeters: dieMeters });
     // Now that the plan has told us which order this batch fulfils, move it
     // off "New" (never backwards) -- this also pushes the public tracking link.
     if (line.orderId) {
@@ -20679,6 +20937,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
       updated.scrapLog = [...(cur.scrapLog || []), { id: uid(), stage, qty: scrapQty, reason: scrapReason, at: nowIso, by: user.name }];
     }
     commitBatches(batchesRef.current.map(b => b.id === batchId ? updated : b));
+    if (stage === 'Cascade' && rs.standard) recordScheduleWear({ std: rs.standard, kg: Number(cur.qty), machine: dprMachineIdFor('CASC', machine) || machine, batchId, stage: 'Cascade', user });
     return { ok: true };
   };
   // Rework finished: the lot goes back for re-inspection (a new inspection lot is created then).
