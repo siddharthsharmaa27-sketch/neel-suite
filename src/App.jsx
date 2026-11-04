@@ -4359,175 +4359,137 @@ function ToolingTab({ toolingItems, onAddDie, onUpdateDieUsage, onSendForPolishi
 }
 
 /* NEEL_STOCK_VIEWS_V1 - consumables inventory */
-function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachines = [], onAddEnergyMachine, onRemoveEnergyMachine, user }) {
-  const [selectedDate, setSelectedDate] = useState(todayKey());
+/* =========================================================================
+   MACHINE ENERGY (Day / Night shift) and MACHINE-WISE LUBRICANTS (linked to the Store)
+   Energy: one closing kWh reading per machine per date per shift. Older readings had no shift: they count as that day's closing (Night) reading.
+   Lubricants: each fill is an issue from the Store (stock goes down, it shows in Store Issue & Reorder), tagged with the machine, so the
+   consumption of every machine can be compared and controlled.
+   ========================================================================= */
+const ENERGY_SHIFTS = ['Day', 'Night'];
+const energyShift = (l) => (l && l.shift === 'Day' ? 'Day' : 'Night');
+const energyKey = (l) => String((l && l.date) || '') + '|' + (energyShift(l) === 'Day' ? '1' : '2');
+const LUBE_DEPT_OF = { Melting: 'Melting', Milling: 'Milling', Rolling: 'Planetary Rolling', Cascade: 'Cascade', Spinner: 'Spinner', Coiling: 'LWC Packing', CTL: 'CTL', Annealing: 'Annealing' };
+const isLubeItem = (m) => !!m && !TOOL_CATEGORY_SET.has(m.category) && (m.category === 'Lubricant' || /lubric|\boil\b|grease|coolant|emulsion|hydraulic/i.test(String(m.name || '')));
+const fmtKwh = (v) => Number(v).toLocaleString('en-IN');
+
+function EnergyShiftView({ energyLogs, onLog, machines, date, shift, onAddMachine, onRemoveMachine, user }) {
+  const logs = energyLogs || [];
   const [readings, setReadings] = useState({});
-  const [showAddMachine, setShowAddMachine] = useState(false);
-  const [newMachineId, setNewMachineId] = useState('');
-  const [newMachineName, setNewMachineName] = useState('');
-  const [newMachineProcess, setNewMachineProcess] = useState('Melting');
-  const [msg, setMsg] = useState('');
-  const [err, setErr] = useState('');
-
-  const allEnergyMachines = useMemo(() => {
-    const map = new Map();
-    ENERGY_MACHINES.forEach(m => map.set(m.id, { ...m, isDefault: true }));
-    (customEnergyMachines || []).forEach(m => {
-      if (m && m.id && !map.has(m.id)) map.set(m.id, { ...m, isDefault: false });
-    });
-    return Array.from(map.values());
-  }, [customEnergyMachines]);
-
-  // ---- readings already saved for the date chosen above (pre-filled in the boxes and listed in the table below) ----
-  const savedForDate = useMemo(() => {
-    const m = {};
-    (energyLogs || []).filter(l => l.date === selectedDate).forEach(l => { m[l.machineId] = l; });
-    return m;
-  }, [energyLogs, selectedDate]);
-  const previousReading = (machineId) => {
-    let best = null;
-    (energyLogs || []).forEach(l => { if (l.machineId === machineId && String(l.date) < String(selectedDate) && (!best || String(l.date) > String(best.date))) best = l; });
-    return best;
-  };
-  const fmtWhen = (iso) => { try { return iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '\u2014'; } catch (e) { return '\u2014'; } };
-  const savedCount = allEnergyMachines.filter(m => savedForDate[m.id]).length;
-
-  const handleAddMachine = () => {
+  const [showAdd, setShowAdd] = useState(false);
+  const [nid, setNid] = useState(''), [nname, setNname] = useState(''), [nproc, setNproc] = useState('Melting');
+  const [msg, setMsg] = useState(''), [err, setErr] = useState(''), [lowList, setLowList] = useState(null);
+  const curKey = date + '|' + (shift === 'Day' ? '1' : '2');
+  const saved = useMemo(() => { const m = {}; logs.filter(l => l.date === date && energyShift(l) === shift).forEach(l => { m[l.machineId] = l; }); return m; }, [logs, date, shift]);
+  const prevOf = (machineId) => { let best = null; logs.forEach(l => { if (l.machineId === machineId && energyKey(l) < curKey && (!best || energyKey(l) > energyKey(best))) best = l; }); return best; };
+  const shownVal = (id) => (readings[id] !== undefined ? readings[id] : (saved[id] ? String(saved[id].kwh) : ''));
+  const fmtWhen = (iso) => { try { return iso ? new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'; } catch (e) { return '—'; } };
+  const savedCount = machines.filter(m => saved[m.id]).length;
+  const addMachine = () => {
     setErr('');
-    const id = newMachineId.trim().toUpperCase();
-    const name = newMachineName.trim();
-    const process = newMachineProcess.trim();
-    if (!id || !name || !process) {
-      setErr('Enter Machine ID, Machine Name, and Process.');
-      return;
-    }
-    if (allEnergyMachines.some(m => m.id.toUpperCase() === id)) {
-      setErr(`Machine ID "${id}" already exists.`);
-      return;
-    }
-    onAddEnergyMachine?.({ id, name, process });
-    setNewMachineId('');
-    setNewMachineName('');
-    setShowAddMachine(false);
-    setMsg(`Machine ${id} added to utility tracking.`);
-    setTimeout(() => setMsg(''), 3500);
+    const id = nid.trim().toUpperCase(), name = nname.trim(), process = nproc.trim();
+    if (!id || !name || !process) { setErr('Enter Machine ID, Machine Name, and Process.'); return; }
+    if (machines.some(m => m.id.toUpperCase() === id)) { setErr(`Machine ID "${id}" already exists.`); return; }
+    onAddMachine?.({ id, name, process });
+    setNid(''); setNname(''); setShowAdd(false);
+    setMsg(`Machine ${id} added to utility tracking.`); setTimeout(() => setMsg(''), 3500);
   };
-
-  const handleSave = () => {
-    setMsg('');
-    setErr('');
+  const doSave = (force) => {
+    setMsg(''); setErr('');
     const entries = Object.entries(readings).filter(([, kwh]) => Number(kwh) > 0);
-    if (!entries.length) {
-      setErr('Enter at least one meter reading before saving.');
-      return;
+    if (!entries.length) { setErr('Enter at least one meter reading before saving.'); return; }
+    if (!force) {
+      const low = entries.map(([id, kwh]) => ({ id, kwh: Number(kwh), prev: prevOf(id) })).filter(x => x.prev && x.kwh < Number(x.prev.kwh));
+      if (low.length) {
+        setLowList(low);
+        setErr(`${low.map(x => `${x.id}: ${fmtKwh(x.kwh)} is lower than the previous reading ${fmtKwh(x.prev.kwh)} (${x.prev.date} ${energyShift(x.prev)})`).join('; ')}. Check the meter.`);
+        return;
+      }
     }
-    onLogMachineEnergy(entries.map(([machineId, kwh]) => ({ date: selectedDate, machineId, kwh: Number(kwh) })));
-    setMsg('Machine energy readings saved successfully!');
-    setReadings({});
-    setTimeout(() => setMsg(''), 4000);
+    setLowList(null);
+    onLog(entries.map(([machineId, kwh]) => ({ date, shift, machineId, kwh: Number(kwh) })));
+    setMsg(`${shift} shift readings for ${date} saved.`); setReadings({}); setTimeout(() => setMsg(''), 4000);
   };
-
+  const sequence = (machineId) => logs.filter(l => l.machineId === machineId).sort((a, b) => energyKey(a).localeCompare(energyKey(b)));
+  const usedFor = (machineId, d, sh) => {
+    const seq = sequence(machineId); const k = d + '|' + (sh === 'Day' ? '1' : '2');
+    const i = seq.findIndex(l => energyKey(l) === k);
+    return i > 0 ? { used: Number(seq[i].kwh) - Number(seq[i - 1].kwh), has: true } : { used: null, has: i === 0 };
+  };
+  const usedCell = (u) => (u === null ? '—' : (u < 0 ? fmtKwh(u) + ' (check meter)' : fmtKwh(u)));
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-          <SectionTitle sub="Log daily or shift closing kWh meter readings for every individual machine.">Machine-Wise Utility Tracking</SectionTitle>
-          <ReportButton id="energy" />
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Button variant="secondary" icon={Plus} onClick={() => setShowAddMachine(v => !v)}>
-            {showAddMachine ? 'Close' : 'Add Machine'}
-          </Button>
-          <label style={{ fontSize: 13, color: C.subtext, display: 'flex', gap: 8, alignItems: 'center' }}>
-            Reading Date:
-            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }} />
-          </label>
-        </div>
-      </div>
-
-      {showAddMachine && (
+      {showAdd && (
         <Card style={{ marginBottom: 16, background: C.panelAlt }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
-            <TextField req label="Machine ID" value={newMachineId} onChange={e => setNewMachineId(e.target.value)} placeholder="e.g. SPB-05" />
-            <TextField req label="Machine Name" value={newMachineName} onChange={e => setNewMachineName(e.target.value)} placeholder="e.g. Spinner Block 5" />
-            <TextField req label="Process" value={newMachineProcess} onChange={e => setNewMachineProcess(e.target.value)} placeholder="e.g. Spinner" />
+            <TextField req label="Machine ID" value={nid} onChange={e => setNid(e.target.value)} placeholder="e.g. SPB-05" />
+            <TextField req label="Machine Name" value={nname} onChange={e => setNname(e.target.value)} placeholder="e.g. Spinner Block 5" />
+            <TextField req label="Process" value={nproc} onChange={e => setNproc(e.target.value)} placeholder="e.g. Spinner" />
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-            <Button onClick={handleAddMachine}>Save Machine</Button>
-            <Button variant="secondary" onClick={() => setShowAddMachine(false)}>Cancel</Button>
-          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}><Button onClick={addMachine}>Save Machine</Button><Button variant="secondary" onClick={() => setShowAdd(false)}>Cancel</Button></div>
         </Card>
       )}
-
       <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 540 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }} data-testid="energy-shift-table">
             <thead>
               <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                <th style={thStyle}>Machine ID</th>
-                <th style={thStyle}>Machine Name</th>
-                <th style={thStyle}>Process</th>
-                <th style={thStyle}>Closing Meter Reading (kWh)</th>
-                <th style={thStyle}></th>
+                {['Machine ID', 'Machine Name', 'Process', 'Previous reading (kWh)', `${shift} shift closing reading (kWh)`, `Used in ${shift} shift (kWh)`, ''].map((h, i) => <th key={i} style={thStyle}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {allEnergyMachines.map(m => (
-                <tr key={m.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
-                  <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 600, color: C.copperDark }}>{m.id}</td>
-                  <td style={{ padding: '10px 14px', color: C.ink, fontWeight: 500 }}>{m.name}</td>
-                  <td style={{ padding: '10px 14px', color: C.subtext }}>{m.process}</td>
-                  <td style={{ padding: '10px 14px' }}>
-                    <input
-                      type="number"
-                      placeholder="Enter kWh"
-                      value={readings[m.id] !== undefined ? readings[m.id] : (savedForDate[m.id] ? String(savedForDate[m.id].kwh) : '')}
-                      onChange={e => setReadings({ ...readings, [m.id]: e.target.value })}
-                      style={{ width: 140, padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }}
-                    />
-                  </td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-                    {!m.isDefault && user?.role === 'Admin' && (
-                      <ConfirmIconButton title={`Remove ${m.id}`} onConfirm={() => onRemoveEnergyMachine?.(m.id)} />
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {machines.map(m => {
+                const prev = prevOf(m.id); const cur = shownVal(m.id);
+                const used = prev && cur !== '' && Number(cur) > 0 ? Number(cur) - Number(prev.kwh) : null;
+                return (
+                  <tr key={m.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
+                    <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 600, color: C.copperDark }}>{m.id}</td>
+                    <td style={{ padding: '10px 14px', color: C.ink, fontWeight: 500 }}>{m.name}</td>
+                    <td style={{ padding: '10px 14px', color: C.subtext }}>{m.process}</td>
+                    <td className="font-mono" style={{ padding: '10px 14px', color: C.subtext }}>{prev ? `${fmtKwh(prev.kwh)} (${prev.date} ${energyShift(prev)})` : '—'}</td>
+                    <td style={{ padding: '10px 14px' }}>
+                      <input type="number" placeholder="Enter kWh" aria-label={`${m.id} ${shift} closing reading`} value={cur} onChange={e => setReadings({ ...readings, [m.id]: e.target.value })}
+                        style={{ width: 140, padding: '6px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, fontFamily: "'JetBrains Mono', monospace" }} />
+                    </td>
+                    <td className="font-mono" style={{ padding: '10px 14px', fontWeight: 700, color: used !== null && used < 0 ? C.red : C.ink }}>{used === null ? '—' : usedCell(used)}</td>
+                    <td style={{ padding: '10px 14px', textAlign: 'right' }}>{!m.isDefault && user?.role === 'Admin' && <ConfirmIconButton title={`Remove ${m.id}`} onConfirm={() => onRemoveMachine?.(m.id)} />}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </Card>
-
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-        <Button onClick={handleSave}>Save All Machine Readings</Button>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <Button onClick={() => doSave(false)}>{`Save ${shift} shift readings`}</Button>
+        {lowList && <Button variant="secondary" onClick={() => doSave(true)}>Save anyway (meter was replaced or reset)</Button>}
+        <Button variant="secondary" icon={Plus} onClick={() => setShowAdd(v => !v)}>{showAdd ? 'Close' : 'Add Machine'}</Button>
         {err && <span role="alert" style={{ color: C.red, fontSize: 13, fontWeight: 600 }}>{err}</span>}
         {msg && <span role="status" style={{ color: C.green, fontSize: 13, fontWeight: 600 }}>{msg}</span>}
       </div>
-
       <div style={{ marginTop: 24 }}>
-        <SectionTitle sub={savedCount + ' of ' + allEnergyMachines.length + ' machines have a saved reading for this date. To correct one, change its box above and save again.'}>{'Saved readings for ' + selectedDate}</SectionTitle>
+        <SectionTitle sub={`${savedCount} of ${machines.length} machines have a ${shift} shift reading for this date. Change a box above and save again to correct one.`}>{`Energy used on ${date}`}</SectionTitle>
       </div>
       <Card style={{ padding: 0, overflow: 'hidden', marginTop: 8 }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }} data-testid="energy-saved-table">
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 760 }} data-testid="energy-day-table">
             <thead>
               <tr style={{ background: C.panelAlt, textAlign: 'left' }}>
-                {['Machine', 'Process', 'Saved reading (kWh)', 'Previous reading', 'Used since previous (kWh)', 'Entered by', 'Entered at'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+                {['Machine', 'Process', 'Day shift used (kWh)', 'Night shift used (kWh)', 'Total for the day (kWh)', 'Entered by'].map(h => <th key={h} style={thStyle}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
-              {allEnergyMachines.map(m => {
-                const saved = savedForDate[m.id]; const prev = previousReading(m.id);
-                const used = saved && prev ? Number(saved.kwh) - Number(prev.kwh) : null;
+              {machines.map(m => {
+                const d = usedFor(m.id, date, 'Day'), n = usedFor(m.id, date, 'Night');
+                const tot = (d.used === null && n.used === null) ? null : (d.used || 0) + (n.used || 0);
+                const rec = logs.filter(l => l.machineId === m.id && l.date === date).sort((a, b) => energyKey(b).localeCompare(energyKey(a)))[0];
                 return (
                   <tr key={m.id} style={{ borderTop: `1px solid ${C.borderSoft}` }}>
                     <td style={{ padding: '8px 14px' }}><span className="font-mono" style={{ fontWeight: 600, color: C.copperDark }}>{m.id}</span> <span style={{ color: C.subtext }}>{m.name}</span></td>
                     <td style={{ padding: '8px 14px', color: C.subtext }}>{m.process}</td>
-                    <td className="font-mono" style={{ padding: '8px 14px', fontWeight: 700, color: saved ? C.ink : C.faint }}>{saved ? Number(saved.kwh).toLocaleString('en-IN') : 'Not entered'}</td>
-                    <td className="font-mono" style={{ padding: '8px 14px', color: C.subtext }}>{prev ? Number(prev.kwh).toLocaleString('en-IN') + ' (' + prev.date + ')' : '\u2014'}</td>
-                    <td className="font-mono" style={{ padding: '8px 14px', color: used !== null && used < 0 ? C.red : C.ink, fontWeight: used !== null && used < 0 ? 700 : 400 }}>{used === null ? '\u2014' : (used < 0 ? used.toLocaleString('en-IN') + ' (lower than previous, check the meter)' : used.toLocaleString('en-IN'))}</td>
-                    <td style={{ padding: '8px 14px', color: C.subtext }}>{saved ? (saved.loggedBy || '\u2014') : '\u2014'}</td>
-                    <td style={{ padding: '8px 14px', color: C.subtext }}>{saved ? fmtWhen(saved.loggedAt) : '\u2014'}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', color: d.used !== null && d.used < 0 ? C.red : C.ink }}>{usedCell(d.used)}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', color: n.used !== null && n.used < 0 ? C.red : C.ink }}>{usedCell(n.used)}</td>
+                    <td className="font-mono" style={{ padding: '8px 14px', fontWeight: 700 }}>{tot === null ? '—' : fmtKwh(tot)}</td>
+                    <td style={{ padding: '8px 14px', color: C.subtext }}>{rec ? `${rec.loggedBy || '—'} · ${fmtWhen(rec.loggedAt)}` : '—'}</td>
                   </tr>
                 );
               })}
@@ -4536,6 +4498,230 @@ function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachine
         </div>
       </Card>
     </div>
+  );
+}
+
+function LubricantView({ machines, date, shift, energyLogs, user }) {
+  const con = useConData();
+  const { master, tx } = con;
+  const byId = useMemo(() => Object.fromEntries(master.map(m => [m.id, m])), [master]);
+  const lubes = useMemo(() => master.filter(isLubeItem), [master]);
+  const [f, setF] = useState({ machineId: '', itemId: '', qty: '', note: '' });
+  const [note, setNote] = useState(null);
+  const [period, setPeriod] = useState('month');
+  const [itemFilter, setItemFilter] = useState('All');
+  const canLog = !!user && canDo(user.role, 'lube.log');
+  const canReverse = !!user && (user.role === 'Admin' || canDo(user.role, 'inventory.adjust'));
+  const item = byId[f.itemId]; const mach = machines.find(x => x.id === f.machineId);
+  const post = () => {
+    if (!canLog) { setNote({ ok: false, text: 'Your role is not allowed to log lubricant use.' }); return; }
+    const q = Number(f.qty) || 0;
+    if (!mach) { setNote({ ok: false, text: 'Choose the machine.' }); return; }
+    if (!item) { setNote({ ok: false, text: 'Choose the lubricant.' }); return; }
+    if (!(q > 0)) { setNote({ ok: false, text: 'Enter a quantity above zero.' }); return; }
+    if (q > (Number(item.stock_qty) || 0)) { setNote({ ok: false, text: `Only ${conQty(item.stock_qty)} ${item.uom} of ${item.name} in the store.` }); return; }
+    const dept = LUBE_DEPT_OF[mach.process] || 'Maintenance';
+    const t = { id: 'TX-' + uid().toUpperCase(), at: new Date().toISOString(), consumable_id: item.id, instance_id: '', machine_id: dept + ' / ' + mach.id, production_order_id: 'LUBE', action: 'Issued to Dept', qty_issued: q, department: dept, cost_centre: mach.id, reason_for_use: 'Lubricant - machine ' + mach.id, issued_to: (user && user.name) || '', unit_cost_at_issue: Number(item.unit_cost) || 0, reason_for_removal: 'N/A', by: (user && user.name) || 'Store', lube: true, lube_machine: mach.id, lube_date: date, lube_shift: shift, note: f.note.trim() };
+    con.setMaster(prev => prev.map(x => x.id === item.id ? Object.assign({}, x, { stock_qty: conR2(Math.max(0, (Number(x.stock_qty) || 0) - q)) }) : x));
+    con.setTx(prev => [t].concat(prev));
+    const left = conR2((Number(item.stock_qty) || 0) - q);
+    const low = Number(item.min_stock_level) > 0 && left <= Number(item.min_stock_level);
+    setNote({ ok: true, text: `${conQty(q)} ${item.uom} of ${item.name} issued to ${mach.id} (${date}, ${shift} shift). Store stock is now ${conQty(left)} ${item.uom}.${low ? ' It is at or below the minimum level: raise a purchase requisition in Stores & Spares.' : ''}` });
+    setF({ ...f, qty: '', note: '' });
+  };
+  const reverse = (t) => {
+    if (!canReverse || t.reversed_by) return;
+    const rev = { ...t, id: 'TX-' + uid().toUpperCase(), at: new Date().toISOString(), action: 'Returned to Store', reversal_of: t.id, reversed_by: undefined, by: (user && user.name) || 'Store' };
+    con.setMaster(prev => prev.map(x => x.id === t.consumable_id ? Object.assign({}, x, { stock_qty: conR2((Number(x.stock_qty) || 0) + Number(t.qty_issued)) }) : x));
+    con.setTx(prev => [rev].concat(prev.map(x => x.id === t.id ? { ...x, reversed_by: rev.id } : x)));
+    setNote({ ok: true, text: 'Entry reversed: the quantity went back into the store.' });
+  };
+  // ---- analysis ----
+  const range = useMemo(() => {
+    const today = todayKey(); const ym = today.slice(0, 7);
+    if (period === 'month') return [ym + '-01', '9999-12-31', 'this month'];
+    if (period === '30') return [addDaysKey(today, -30), '9999-12-31', 'the last 30 days'];
+    if (period === 'last') { const to = addDaysKey(ym + '-01', -1); return [to.slice(0, 7) + '-01', to, 'last month']; }
+    return ['0000-01-01', '9999-12-31', 'all time'];
+  }, [period]);
+  const entries = useMemo(() => tx.filter(t => t.lube && t.action === 'Issued to Dept' && !t.reversed_by && t.lube_date >= range[0] && t.lube_date <= range[1]), [tx, range]);
+  const kwhBy = useMemo(() => {
+    const out = {}; const by = {};
+    (energyLogs || []).forEach(l => { (by[l.machineId] = by[l.machineId] || []).push(l); });
+    Object.keys(by).forEach(id => { const seq = by[id].sort((a, b) => energyKey(a).localeCompare(energyKey(b))); seq.forEach((l, i) => { if (i > 0 && l.date >= range[0] && l.date <= range[1]) { const d = Number(l.kwh) - Number(seq[i - 1].kwh); if (d > 0) out[id] = (out[id] || 0) + d; } }); });
+    return out;
+  }, [energyLogs, range]);
+  const cost = (t) => (Number(t.qty_issued) || 0) * (Number(t.unit_cost_at_issue) || (byId[t.consumable_id] || {}).unit_cost || 0);
+  const rows = useMemo(() => {
+    const mp = {};
+    entries.filter(t => itemFilter === 'All' || t.consumable_id === itemFilter).forEach(t => {
+      const r = mp[t.lube_machine] = mp[t.lube_machine] || { id: t.lube_machine, qty: {}, cost: 0, fills: 0, rawQty: 0 };
+      const it = byId[t.consumable_id] || {}; const key = (it.name || 'Item') + ' (' + (it.uom || '') + ')';
+      r.qty[key] = (r.qty[key] || 0) + (Number(t.qty_issued) || 0); r.rawQty += Number(t.qty_issued) || 0; r.cost += cost(t); r.fills += 1;
+    });
+    const list = Object.values(mp).map(r => { const mc = machines.find(m => m.id === r.id) || {}; return { ...r, name: mc.name || r.id, process: mc.process || '', kwh: kwhBy[r.id] || 0 }; });
+    const total = list.reduce((s, r) => s + r.cost, 0);
+    const avg = list.length ? total / list.length : 0;
+    list.forEach(r => { r.share = total ? r.cost / total * 100 : 0; r.high = list.length >= 3 && avg > 0 && r.cost > 1.5 * avg; r.per1000 = r.kwh > 0 ? r.cost / (r.kwh / 1000) : null; });
+    return list.sort((a, b) => (itemFilter === 'All' ? b.cost - a.cost : b.rawQty - a.rawQty));
+  }, [entries, itemFilter, byId, machines, kwhBy]);
+  const totalCost = rows.reduce((s, r) => s + r.cost, 0);
+  const top = rows[0];
+  const chartData = rows.slice(0, 14).map(r => ({ machine: r.id, value: itemFilter === 'All' ? Math.round(r.cost) : Math.round(r.rawQty * 100) / 100 }));
+  const chartUnit = itemFilter === 'All' ? 'Cost (₹)' : `Quantity (${(byId[itemFilter] || {}).uom || ''})`;
+  const log = tx.filter(t => t.lube).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 25);
+  const select = { padding: '8px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13, background: '#fff', width: '100%' };
+  return (
+    <div>
+      <ConNote note={note} />
+      {lubes.length === 0 && <Card style={{ marginBottom: 12 }}><p style={{ fontSize: 13, color: C.red, margin: 0 }}>No lubricant item is in the store yet. Add it in the Master Store (item type Lubricant, for example “Spindle oil” or “Grease”) so its use can be tracked against machines.</p></Card>}
+      <Card style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.ink, marginBottom: 8 }}>LOG LUBRICANT USED — {date}, {shift} shift (taken from the Store)</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, alignItems: 'end' }}>
+          <label style={{ fontSize: 12, color: C.subtext }}>Machine <span style={{ color: C.red, fontWeight: 700 }}>*</span>
+            <select aria-label="Lubricant machine" value={f.machineId} onChange={e => setF({ ...f, machineId: e.target.value })} style={select}><option value="">Select machine</option>{machines.map(m => <option key={m.id} value={m.id}>{m.id + ' - ' + m.name}</option>)}</select></label>
+          <label style={{ fontSize: 12, color: C.subtext }}>Lubricant <span style={{ color: C.red, fontWeight: 700 }}>*</span>
+            <select aria-label="Lubricant item" value={f.itemId} onChange={e => setF({ ...f, itemId: e.target.value })} style={select}><option value="">Select lubricant</option>{lubes.map(m => <option key={m.id} value={m.id}>{`${m.sku ? m.sku + ' - ' : ''}${m.name} (${conQty(m.stock_qty)} ${m.uom} in store)`}</option>)}</select></label>
+          <label style={{ fontSize: 12, color: C.subtext }}>{`Quantity${item ? ' (' + item.uom + ')' : ''}`} <span style={{ color: C.red, fontWeight: 700 }}>*</span>
+            <input aria-label="Lubricant quantity" type="number" min="0" step="0.1" value={f.qty} onChange={e => setF({ ...f, qty: e.target.value })} style={select} /></label>
+          <label style={{ fontSize: 12, color: C.subtext }}>Remarks
+            <input aria-label="Lubricant remarks" value={f.note} onChange={e => setF({ ...f, note: e.target.value })} placeholder="e.g. top-up after leak" style={select} /></label>
+          <div><Button onClick={post} disabled={!canLog}>Issue to machine</Button></div>
+        </div>
+        {!canLog && <p style={{ fontSize: 12, color: C.subtext, margin: '8px 0 0' }}>Your role can view the analysis but cannot log lubricant use. The Admin can allow it in Master &gt; Access (Maintenance).</p>}
+      </Card>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <SectionTitle sub={`Lubricant consumption by machine for ${range[2]}. Every entry here is also an issue in the Store.`}>Which machine uses the most?</SectionTitle>
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <select aria-label="Period" value={period} onChange={e => setPeriod(e.target.value)} style={{ ...select, width: 'auto' }}>{[['month', 'This month'], ['30', 'Last 30 days'], ['last', 'Last month'], ['all', 'All time']].map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+          <select aria-label="Lubricant filter" value={itemFilter} onChange={e => setItemFilter(e.target.value)} style={{ ...select, width: 'auto' }}><option value="All">All lubricants (cost)</option>{lubes.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select>
+          {rows.length > 0 && <ExportButton label="Export" onExport={() => exportToExcel('lubricants-by-machine.xlsx', {
+            'By machine': rows.map(r => ({ Machine: r.id, Name: r.name, Process: r.process, Fills: r.fills, Used: Object.keys(r.qty).map(k => `${Math.round(r.qty[k] * 100) / 100} ${k}`).join('; '), 'Cost (INR)': Math.round(r.cost), 'Share %': Math.round(r.share), 'Energy (kWh)': Math.round(r.kwh), 'INR per 1,000 kWh': r.per1000 === null ? '' : Math.round(r.per1000) })),
+            Log: entries.map(t => ({ Date: t.lube_date, Shift: t.lube_shift, Machine: t.lube_machine, Lubricant: (byId[t.consumable_id] || {}).name || '', Qty: t.qty_issued, UOM: (byId[t.consumable_id] || {}).uom || '', 'Cost (INR)': Math.round(cost(t)), By: t.by, Remarks: t.note || '' })),
+          })} />}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 12 }}>
+        <ConKpi label="Lubricant cost" value={conRs(totalCost)} sub={range[2]} />
+        <ConKpi label="Fills logged" value={String(entries.length)} sub={`${rows.length} machine${rows.length === 1 ? '' : 's'}`} />
+        <ConKpi label="Highest consumer" value={top ? top.id : '—'} sub={top ? `${Math.round(top.share)}% of the cost` : 'no entries yet'} tone={top && top.high ? 'red' : undefined} />
+      </div>
+      {rows.length > 0 && (
+        <Card style={{ padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: C.subtext, marginBottom: 6 }}>{chartUnit} by machine</div>
+          <div style={{ width: '100%', height: 240 }}>
+            <ResponsiveContainer>
+              <BarChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="machine" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v) => [itemFilter === 'All' ? conRs(v) : v, chartUnit]} />
+                <Bar dataKey="value" fill={C.copper} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+      )}
+      <Card style={{ padding: 0, overflow: 'hidden', marginBottom: 16 }}>
+        {rows.length === 0 ? <EmptyState title="No lubricant entries in this period" sub="Log the first one above." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 820 }} data-testid="lube-by-machine">
+              <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Machine', 'Process', 'Fills', 'Used', 'Cost', 'Share', 'Energy (kWh)', '₹ per 1,000 kWh', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+              <tbody>{rows.map(r => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${C.borderSoft}`, background: r.high ? '#fdf0f0' : undefined }}>
+                  <td style={{ padding: '8px 14px' }}><span className="font-mono" style={{ fontWeight: 600, color: C.copperDark }}>{r.id}</span> <span style={{ color: C.subtext }}>{r.name}</span></td>
+                  <td style={{ padding: '8px 14px', color: C.subtext }}>{r.process}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px' }}>{r.fills}</td>
+                  <td style={{ padding: '8px 14px' }}>{Object.keys(r.qty).map(k => <div key={k} className="font-mono" style={{ fontSize: 12 }}>{Math.round(r.qty[k] * 100) / 100} {k}</div>)}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px', fontWeight: 700 }}>{conRs(r.cost)}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px' }}>{Math.round(r.share)}%</td>
+                  <td className="font-mono" style={{ padding: '8px 14px', color: C.subtext }}>{r.kwh ? fmtKwh(Math.round(r.kwh)) : '—'}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px', color: C.subtext }}>{r.per1000 === null ? '—' : conRs(r.per1000)}</td>
+                  <td style={{ padding: '8px 14px' }}>{r.high && <Badge tone="red">High</Badge>}</td>
+                </tr>))}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      <SectionTitle sub="The latest entries. Reversing one puts the quantity back into the store.">Recent lubricant entries</SectionTitle>
+      <Card style={{ padding: 0, overflow: 'hidden', marginTop: 8 }}>
+        {log.length === 0 ? <EmptyState title="Nothing logged yet" sub="Entries appear here and in Store Issue & Reorder." /> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 720 }}>
+              <thead><tr style={{ background: C.panelAlt, textAlign: 'left' }}>{['Date', 'Shift', 'Machine', 'Lubricant', 'Qty', 'By', 'Remarks', ''].map(h => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+              <tbody>{log.map(t => { const it = byId[t.consumable_id] || {}; const isRev = t.action === 'Returned to Store'; return (
+                <tr key={t.id} style={{ borderTop: `1px solid ${C.borderSoft}`, opacity: t.reversed_by || isRev ? 0.55 : 1 }}>
+                  <td style={{ padding: '8px 14px' }}>{t.lube_date}</td><td style={{ padding: '8px 14px' }}>{t.lube_shift}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px', color: C.copperDark }}>{t.lube_machine}</td>
+                  <td style={{ padding: '8px 14px' }}>{it.name || 'Deleted item'}</td>
+                  <td className="font-mono" style={{ padding: '8px 14px' }}>{isRev ? '−' : ''}{conQty(t.qty_issued)} {it.uom}</td>
+                  <td style={{ padding: '8px 14px', color: C.subtext }}>{t.by}</td><td style={{ padding: '8px 14px', color: C.subtext }}>{isRev ? 'Reversal' : (t.reversed_by ? 'Reversed' : (t.note || '—'))}</td>
+                  <td style={{ padding: '8px 14px' }}>{canReverse && !isRev && !t.reversed_by && <button type="button" style={invBtnGhost} onClick={() => reverse(t)} data-testid={'lube-reverse-' + t.id}>Reverse</button>}</td>
+                </tr>); })}</tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function EnergyTrackingTab({ energyLogs, onLogMachineEnergy, customEnergyMachines = [], onAddEnergyMachine, onRemoveEnergyMachine, user }) {
+  const [selectedDate, setSelectedDate] = useState(todayKey());
+  const [shift, setShift] = useState('Day');
+  const machines = useMemo(() => {
+    const map = new Map();
+    ENERGY_MACHINES.forEach(m => map.set(m.id, { ...m, isDefault: true }));
+    (customEnergyMachines || []).forEach(m => { if (m && m.id && !map.has(m.id)) map.set(m.id, { ...m, isDefault: false }); });
+    return Array.from(map.values());
+  }, [customEnergyMachines]);
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+          <SectionTitle sub="Energy by Day and Night shift for every individual machine.">Machine-Wise Utility Tracking</SectionTitle>
+          <ReportButton id="energy" />
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 13, color: C.subtext, display: 'flex', gap: 8, alignItems: 'center' }}>
+            Date:
+            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }} />
+          </label>
+          <div role="group" aria-label="Shift" style={{ display: 'inline-flex', border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden' }}>
+            {ENERGY_SHIFTS.map(s => <button key={s} type="button" onClick={() => setShift(s)} aria-pressed={shift === s} data-testid={'shift-' + s}
+              style={{ padding: '7px 16px', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer', background: shift === s ? C.copper : '#fff', color: shift === s ? '#fff' : C.ink }}>{s} shift</button>)}
+          </div>
+        </div>
+      </div>
+      <EnergyShiftView energyLogs={energyLogs} onLog={onLogMachineEnergy} machines={machines} date={selectedDate} shift={shift} onAddMachine={onAddEnergyMachine} onRemoveMachine={onRemoveEnergyMachine} user={user} />
+    </div>
+  );
+}
+
+// Lubricant consumption lives in Inventory Management: every fill is an issue from the Store.
+function LubricantTrackingTab({ energyLogs, customEnergyMachines = [], user, setTab }) {
+  const [selectedDate, setSelectedDate] = useState(todayKey());
+  const [shift, setShift] = useState('Day');
+  const machines = useMemo(() => {
+    const map = new Map();
+    ENERGY_MACHINES.forEach(m => map.set(m.id, { ...m, isDefault: true }));
+    (customEnergyMachines || []).forEach(m => { if (m && m.id && !map.has(m.id)) map.set(m.id, { ...m, isDefault: false }); });
+    return Array.from(map.values());
+  }, [customEnergyMachines]);
+  return (
+    <InvPageFrame title="Lubricant Consumption" sub="Lubricant use by machine, issued from the Store. Compare machines to find and control the high consumers." setTab={setTab}
+      right={<div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label style={{ fontSize: 13, color: C.subtext, display: 'flex', gap: 8, alignItems: 'center' }}>
+          Date:
+          <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 13 }} />
+        </label>
+        <div role="group" aria-label="Shift" style={{ display: 'inline-flex', border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden' }}>
+          {ENERGY_SHIFTS.map(s => <button key={s} type="button" onClick={() => setShift(s)} aria-pressed={shift === s} data-testid={'shift-' + s}
+            style={{ padding: '7px 16px', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer', background: shift === s ? C.copper : '#fff', color: shift === s ? '#fff' : C.ink }}>{s} shift</button>)}
+        </div>
+      </div>}>
+      <LubricantView machines={machines} date={selectedDate} shift={shift} energyLogs={energyLogs} user={user} />
+    </InvPageFrame>
   );
 }
 
@@ -4681,7 +4867,7 @@ function plantEnergyMonthKWh(energyLogs, month) {
   let kwh = 0, machines = 0;
   Object.values(byMachine).forEach(list => {
     if (list.length < 2) return;
-    list.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    list.sort((a, b) => energyKey(a).localeCompare(energyKey(b)));   // by date, then Day before Night
     const d = list[list.length - 1].kwh - list[0].kwh;
     if (d > 0) { kwh += d; machines += 1; }
   });
@@ -5254,25 +5440,25 @@ const REPORTS = [
     build: (c) => ({ 'Tooling': (c.toolingItems || []).map(d => ({ Type: d.type || 'Die', 'Tool ID': d.id, Size: d.size, 'Meters drawn': d.usageMeters, 'Wear limit (m)': d.limitMeters, 'Remaining (m)': Math.max(0, d.limitMeters - d.usageMeters), 'Used %': d.limitMeters > 0 ? Math.round((d.usageMeters / d.limitMeters) * 100) : '', Status: d.status === 'Polishing' ? 'Sent for polishing' : d.usageMeters >= d.limitMeters * 0.9 ? 'Needs polish' : 'Active' })) }) },
   { id: 'energy', group: 'Maintenance', title: 'Machine energy', desc: 'Every kWh meter reading entered per machine.',
     build: (c, rg) => {
-      // Sheet 1: one ROW per machine per date, newest date first. Sheet 2: one ROW per machine with a column for each date.
+      // Sheet 1: one ROW per machine per date and shift (newest first). Sheet 2: one ROW per machine with a column for each date and shift.
       const info = {}; ENERGY_MACHINES.concat(c.customEnergyMachines || []).forEach(m => { info[m.id] = m; });
-      const all = (c.energyLogs || []).slice().sort((a, b) => String(a.machineId).localeCompare(String(b.machineId)) || String(a.date).localeCompare(String(b.date)));
+      const all = (c.energyLogs || []).slice().sort((a, b) => String(a.machineId).localeCompare(String(b.machineId)) || energyKey(a).localeCompare(energyKey(b)));
       const prev = {}, used = {};
-      all.forEach(l => { const p = prev[l.machineId]; used[l.machineId + '|' + l.date] = p === undefined ? '' : Number(l.kwh) - p; prev[l.machineId] = Number(l.kwh); });
+      all.forEach(l => { const p = prev[l.machineId]; used[l.machineId + '|' + energyKey(l)] = p === undefined ? '' : Number(l.kwh) - p; prev[l.machineId] = Number(l.kwh); });
       const when = (iso) => { try { return iso ? new Date(iso).toLocaleString('en-IN') : ''; } catch (e) { return ''; } };
       const inRange = all.filter(e => inRangeDay(e.date, rg));
-      const rows = inRange.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(a.machineId).localeCompare(String(b.machineId))).map(l => ({
-        Date: l.date, 'Machine ID': l.machineId, 'Machine name': (info[l.machineId] || {}).name || '', Process: (info[l.machineId] || {}).process || '',
-        'Closing reading (kWh)': Number(l.kwh), 'Used since previous reading (kWh)': used[l.machineId + '|' + l.date], 'Entered by': l.loggedBy || '', 'Entered at': when(l.loggedAt),
+      const rows = inRange.slice().sort((a, b) => energyKey(b).localeCompare(energyKey(a)) || String(a.machineId).localeCompare(String(b.machineId))).map(l => ({
+        Date: l.date, Shift: energyShift(l), 'Machine ID': l.machineId, 'Machine name': (info[l.machineId] || {}).name || '', Process: (info[l.machineId] || {}).process || '',
+        'Closing reading (kWh)': Number(l.kwh), 'Used in this shift (kWh)': used[l.machineId + '|' + energyKey(l)], 'Entered by': l.loggedBy || '', 'Entered at': when(l.loggedAt),
       }));
-      const dates = Array.from(new Set(inRange.map(l => l.date))).sort();
+      const cols = Array.from(new Set(inRange.map(l => energyKey(l)))).sort();
       const machines = Array.from(new Set(inRange.map(l => l.machineId))).sort();
       const matrix = machines.map(id => {
         const row = { 'Machine ID': id, 'Machine name': (info[id] || {}).name || '', Process: (info[id] || {}).process || '' };
-        dates.forEach(d => { const hit = inRange.find(l => l.machineId === id && l.date === d); row[d] = hit ? Number(hit.kwh) : ''; });
+        cols.forEach(k => { const hit = inRange.find(l => l.machineId === id && energyKey(l) === k); row[k.replace('|1', ' Day').replace('|2', ' Night')] = hit ? Number(hit.kwh) : ''; });
         return row;
       });
-      return { 'Energy readings': rows, 'Machine x Date (kWh)': matrix };
+      return { 'Energy readings': rows, 'Machine x Shift (kWh)': matrix };
     } },
   { id: 'capa', group: 'Quality', title: 'CAPA register', desc: 'Corrective and preventive actions with status.',
     build: (c, rg) => ({ 'CAPA': (c.capaRecords || []).filter(x => inRangeIso(x.createdAt, rg)).map(x => flatRow(x)) }) },
@@ -13766,6 +13952,7 @@ function HorizonMyHome({
     { title: 'Lab & Mechanical', subtitle: 'Spectro & Tensile Tests', icon: Activity, tab: 'lab', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Purchase & Goods Receipt', subtitle: 'Orders & Receiving', icon: FileSpreadsheet, tab: 'conpurchase', cat: 'Favorites', color: '#5c2d91' },
     { title: 'Stores & Spares', subtitle: 'Items, Spares & Requisitions', icon: Boxes, tab: 'stores', cat: 'Favorites', color: '#5c2d91' },
+    { title: 'Lubricant Consumption', subtitle: 'Machine-wise Use & Cost', icon: Boxes, tab: 'lubricants', cat: 'Favorites', color: '#5c2d91' },
     { title: 'Cycle Count', subtitle: 'Physical Inventory Audit', icon: ScanLine, tab: 'cyclecount', cat: 'Most Used', color: '#0a6ed1' },
     { title: 'Display Outbound Delivery', subtitle: 'Dispatch & Challans', icon: Package, tab: 'dispatch', cat: 'Favorites', color: '#0a6ed1' },
     { title: 'Sales Orders', subtitle: 'Order Book & Tracking', icon: ClipboardList, tab: 'orders', cat: 'Favorites', color: '#0a6ed1' },
@@ -18880,6 +19067,7 @@ const SPACE_HUBS = {
       { tab: 'invfin', title: 'Finished Goods Inventory', sub: 'Tubes in kg, Pallets & Boxes' },
       { tab: 'stores', title: 'Stores & Spares', sub: 'Master Store, Consumables, Spares & PR' },
       { tab: 'tooling', title: 'Tooling & Dies', sub: 'Die Usage & Polishing' },
+      { tab: 'lubricants', title: 'Lubricant Consumption', sub: 'Machine-wise Use & Cost' },
       { tab: 'inventory', title: 'Stock Overview', sub: 'Raw & Finished Goods' },
     ] },
     { title: 'Consumables Cost Control', tiles: [
@@ -18980,6 +19168,7 @@ const NAV_GROUPS = [
       { key: 'skills', label: 'Skill Matrix', icon: GraduationCap },
       { key: 'kaizen', label: 'Kaizen', icon: Lightbulb },
       { key: 'stores', label: 'Stores & Spares', icon: Boxes, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager', 'Production', 'Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room'] },
+      { key: 'lubricants', label: 'Lubricant Consumption', icon: Boxes, roles: ['Admin', 'Owner', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'PPC Manager', 'Production', 'Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room'] },
       { key: 'inventory', label: 'Inventory', icon: Boxes },
       { key: 'cyclecount', label: 'Cycle Count', icon: ScanLine, roles: ['Admin', 'Manager', 'Assistant Manager', 'Store', 'RM & Supply Chain Manager', 'Dispatch', 'Packing', 'Owner'] },
       { key: 'matdocs', label: 'Material Documents', icon: FileSpreadsheet },
@@ -19076,6 +19265,7 @@ const ACTION_FEATURES = [
   ...DASHBOARD_WIDGETS.map(w => ({ key: 'home.w.' + w, group: 'Visibility',
     label: w === 'Reject Pareto' ? 'Home: Rejections (Reject Pareto chart)' : w === 'Yield & Loss' ? 'Home: Yield & Loss chart' : 'Home widget: ' + w,
     rule: r => w === 'Sales' ? ['Sales', 'Admin', 'Owner'].includes(r) : (w === 'Reject Pareto' || w === 'Yield & Loss') ? ['Quality', ...['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner']].includes(r) : ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner'].includes(r) })),
+  { key: 'lube.log', group: 'Stores & Procurement', label: 'Lubricant Consumption: log use per machine (issues it from the Store)', rule: r => ['Store', 'RM & Supply Chain Manager', 'Admin', 'Manager', 'Assistant Manager', 'Maintenance - Electrical', 'Maintenance - Mechanical', 'Tool Room', 'Production', 'PPC Manager'].includes(r) },
   { key: 'customer.see', group: 'Visibility', label: 'See which customer an order is for', rule: r => ['Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin', 'Owner', 'Sales', 'Dispatch'].includes(r) },
   { key: 'master.add', group: 'Visibility', label: 'Add new customers, sizes and other values to Master from a form', rule: r => ['Sales', 'Production', 'PPC Manager', 'Manager', 'Assistant Manager', 'Admin'].includes(r) },
 ];
@@ -19583,7 +19773,7 @@ function Shell({
     { key: 'hub_qm', label: 'Neel : QM Apps', match: ['hub_qm', 'quality', 'qchold', 'qmlots', 'lab', 'spc', 'capa'] },
     { key: 'hub_sd', label: 'Neel : SD Apps', match: ['hub_sd', 'orders'] },
     { key: 'hub_ship', label: 'Shipping', match: ['hub_ship', 'dispatch'] },
-    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'invraw', 'invfin', 'stores', 'tooling', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock', 'purchaseorders', 'matprices', 'overduepo', 'conpurchase', 'constore', 'concost'] },
+    { key: 'invhub', label: 'Inventory Management', match: ['invhub', 'invraw', 'invfin', 'lubricants', 'stores', 'tooling', 'inventory', 'cyclecount', 'matdocs', 'bomMrp', 'migo', 'stocksingle', 'deadstock', 'slowmoving', 'analyzestock', 'purchaseorders', 'matprices', 'overduepo', 'conpurchase', 'constore', 'concost'] },
     { key: 'hub_prod', label: 'Production & Shop Floor', match: ['hub_prod', 'plan', 'stages', 'floor', 'dpr', 'schedule'] },
     { key: 'hub_maint', label: 'Maintenance', match: ['hub_maint', 'maintenance', 'energy'] },
     ...(canSeeTab(user, 'master') ? [{ key: 'hub_admin', label: 'Administration', match: ['hub_admin', 'master', 'team', 'cost', 'reports', 'audit', 'trends', 'skills', 'kaizen'] }] : []),
@@ -20607,7 +20797,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
   };
   const logMachineEnergy = (logs) => setEnergyLogs(prev => {
     const incoming = (Array.isArray(logs) ? logs : [logs]).map(l => ({ ...l, loggedBy: user.name, loggedAt: new Date().toISOString() }));
-    const next = [...prev.filter(p => !incoming.some(n => n.date === p.date && n.machineId === p.machineId)), ...incoming];
+    const next = [...prev.filter(p => !incoming.some(n => n.date === p.date && n.machineId === p.machineId && (n.shift || 'Night') === (p.shift || 'Night'))), ...incoming];
     saveShared(KEYS.machineEnergy, next);
     return next;
   });
@@ -22319,6 +22509,7 @@ const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined'
           {tab === 'reports' && canSeeTab(user, 'reports') && <ReportsTab user={user} />}
           {tab === 'audit' && canSeeTab(user, 'audit') && <AuditTab user={user} />}
           {tab === 'tooling' && <ToolingTab toolingItems={toolingItems} onAddDie={addDie} onUpdateDieUsage={updateDieUsage} onSendForPolishing={sendDieForPolishing} onDeleteDie={deleteDie} user={user} setTab={setTab} />}
+          {tab === 'lubricants' && <LubricantTrackingTab energyLogs={energyLogs} customEnergyMachines={settings.customEnergyMachines || []} user={user} setTab={setTab} />}
           {tab === 'energy' && <EnergyTrackingTab energyLogs={energyLogs} onLogMachineEnergy={logMachineEnergy} customEnergyMachines={settings.customEnergyMachines || []} onAddEnergyMachine={(m) => updateSettings({ customEnergyMachines: [...(settings.customEnergyMachines || []), m] })} onRemoveEnergyMachine={(id) => updateSettings({ customEnergyMachines: (settings.customEnergyMachines || []).filter(x => x.id !== id) })} user={user} />}
           {tab === 'kaizen' && <KaizenTab kaizenIdeas={kaizenIdeas} onAdd={addKaizen} onUpdateStatus={updateKaizenStatus} onDelete={deleteKaizen} user={user} />}
           {tab === 'dpr' && <DprTab dprEntries={dprEntries} onUpdateDpr={updateDprEntry}
